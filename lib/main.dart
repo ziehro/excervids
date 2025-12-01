@@ -514,7 +514,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
   late VideoPlayerController _controller;
   bool _isInitialized = false;
   bool _isPlayingInBackground = false;
-  bool _wasPlayingBeforeBackground = false;
 
   @override
   void initState() {
@@ -545,14 +544,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
 
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
       // Screen turning off - switch to audio only
-      _wasPlayingBeforeBackground = _controller.value.isPlaying;
-      if (_wasPlayingBeforeBackground && audioHandler != null) {
+      if (_controller.value.isPlaying && audioHandler != null) {
         final position = _controller.value.position;
         _controller.pause();
         _startBackgroundAudio(position);
       }
     } else if (state == AppLifecycleState.resumed) {
-      // Screen turning back on - switch back to video
+      // Screen turning back on - switch back to video and auto-play
       if (_isPlayingInBackground) {
         _resumeVideoFromAudio();
       }
@@ -583,11 +581,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
     if (mounted) {
       setState(() => _isPlayingInBackground = false);
 
-      // Seek video to audio position and resume
+      // Seek video to audio position and auto-resume playback
       await _controller.seekTo(audioPosition);
-      if (_wasPlayingBeforeBackground) {
-        _controller.play();
-      }
+      await _controller.play();
     }
   }
 
