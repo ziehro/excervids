@@ -336,6 +336,24 @@ class _VideoListScreenState extends State<VideoListScreen> {
     }
   }
 
+  Future<void> _playRandomFromFolder(String folderName) async {
+    final videos = videosByFolder[folderName]!;
+
+    final unplayedVideos = videos.where((file) {
+      return !playedVideos.contains(file.path);
+    }).toList();
+
+    final videosToPlay = unplayedVideos.isEmpty ? videos : unplayedVideos;
+
+    final random = Random();
+    final randomVideo = videosToPlay[random.nextInt(videosToPlay.length)];
+
+    playedVideos.add(randomVideo.path);
+    await prefs?.setStringList('playedVideos', playedVideos);
+
+    _playVideo(randomVideo);
+  }
+
   @override
   Widget build(BuildContext context) {
     final unplayedCount = allVideos.where((f) => !playedVideos.contains(f.path)).length;
@@ -427,11 +445,17 @@ class _VideoListScreenState extends State<VideoListScreen> {
               itemBuilder: (context, index) {
                 final folderName = sortedFolders[index];
                 final videos = videosByFolder[folderName]!;
+                final unplayedInFolder = videos.where((v) => !playedVideos.contains(v.path)).length;
 
                 return ExpansionTile(
                   leading: const Icon(Icons.folder),
                   title: Text(folderName),
-                  subtitle: Text('${videos.length} videos'),
+                  subtitle: Text('${videos.length} videos ($unplayedInFolder unplayed)'),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.shuffle, color: Colors.blue),
+                    onPressed: () => _playRandomFromFolder(folderName),
+                    tooltip: 'Play random from folder',
+                  ),
                   children: videos.map((video) {
                     final name = video.path.split('/').last;
                     final isPlayed = playedVideos.contains(video.path);
