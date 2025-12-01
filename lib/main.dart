@@ -31,7 +31,10 @@ void main() async {
 }
 
 class AudioPlayerHandler extends BaseAudioHandler {
-  final _player = AudioPlayer();
+  final AudioPlayer _player = AudioPlayer();
+
+  // Expose player for position tracking
+  AudioPlayer get player => _player;
 
   AudioPlayerHandler() {
     _player.playbackEventStream.listen((event) {
@@ -487,7 +490,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
   late VideoPlayerController _controller;
   bool _isInitialized = false;
   bool _isPlayingInBackground = false;
-  Duration _lastPosition = Duration.zero;
+  bool _wasPlayingBeforeBackground = false;
 
   @override
   void initState() {
@@ -495,18 +498,20 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
     WidgetsBinding.instance.addObserver(this);
     _controller = VideoPlayerController.file(widget.videoFile)
       ..initialize().then((_) {
-        setState(() => _isInitialized = true);
-        _controller.play();
+        if (mounted) {
+          setState(() => _isInitialized = true);
+          _controller.play();
+        }
       });
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _controller.dispose();
     if (_isPlayingInBackground && audioHandler != null) {
       audioHandler!.stop();
     }
+    _controller.dispose();
     super.dispose();
   }
 
@@ -515,35 +520,51 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
     super.didChangeAppLifecycleState(state);
 
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
-      // App going to background - switch to audio only
-      if (_controller.value.isPlaying && audioHandler != null) {
-        _lastPosition = _controller.value.position;
+      // Screen turning off - switch to audio only
+      _wasPlayingBeforeBackground = _controller.value.isPlaying;
+      if (_wasPlayingBeforeBackground && audioHandler != null) {
+        final position = _controller.value.position;
         _controller.pause();
-        _startBackgroundAudio();
+        _startBackgroundAudio(position);
       }
     } else if (state == AppLifecycleState.resumed) {
-      // App coming back - stop audio and resume video
-      if (_isPlayingInBackground && audioHandler != null) {
-        audioHandler!.stop();
-        _isPlayingInBackground = false;
-        _controller.seekTo(_lastPosition);
-        _controller.play();
+      // Screen turning back on - switch back to video
+      if (_isPlayingInBackground) {
+        _resumeVideoFromAudio();
       }
     }
   }
 
-  Future<void> _startBackgroundAudio() async {
+  Future<void> _startBackgroundAudio(Duration position) async {
     if (audioHandler == null) return;
 
     final fileName = widget.videoFile.path.split('/').last;
     await audioHandler!.playFile(widget.videoFile.path, fileName);
+    await audioHandler!.seek(position);
 
-    // Seek to current position
-    if (_lastPosition > Duration.zero) {
-      await audioHandler!.seek(_lastPosition);
+    if (mounted) {
+      setState(() => _isPlayingInBackground = true);
     }
+  }
 
-    setState(() => _isPlayingInBackground = true);
+  Future<void> _resumeVideoFromAudio() async {
+    if (audioHandler == null) return;
+
+    // Get current audio position before stopping
+    final audioPosition = audioHandler!.player.position;
+
+    // Stop audio
+    await audioHandler!.stop();
+
+    if (mounted) {
+      setState(() => _isPlayingInBackground = false);
+
+      // Seek video to audio position and resume
+      await _controller.seekTo(audioPosition);
+      if (_wasPlayingBeforeBackground) {
+        _controller.play();
+      }
+    }
   }
 
   @override
