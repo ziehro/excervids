@@ -103,6 +103,7 @@ class _VideoListScreenState extends State<VideoListScreen> {
   SharedPreferences? prefs;
   List<String> playedVideos = [];
   String? lastPlayedDate;
+  String scanStatus = '';
 
   @override
   void initState() {
@@ -112,13 +113,17 @@ class _VideoListScreenState extends State<VideoListScreen> {
 
   Future<void> _initializeApp() async {
     try {
+      await Future.delayed(const Duration(milliseconds: 500));
       await _requestPermissions();
       await _setupDirectory();
       await _loadPreferences();
       await _loadVideos();
     } catch (e) {
       print('Initialization error: $e');
-      setState(() => isLoading = false);
+      setState(() {
+        isLoading = false;
+        scanStatus = 'Error: $e';
+      });
     }
   }
 
@@ -145,12 +150,23 @@ class _VideoListScreenState extends State<VideoListScreen> {
   Future<void> _requestPermissions() async {
     try {
       if (Platform.isAndroid) {
-        await Permission.storage.request();
-        await Permission.manageExternalStorage.request();
+        final storageStatus = await Permission.storage.request();
+        print('Storage permission: $storageStatus');
+
+        final manageStatus = await Permission.manageExternalStorage.request();
+        print('Manage external storage: $manageStatus');
+
         await Permission.notification.request();
+
+        setState(() {
+          scanStatus = 'Permissions: storage=$storageStatus, manage=$manageStatus';
+        });
       }
     } catch (e) {
       print('Permission error: $e');
+      setState(() {
+        scanStatus = 'Permission error: $e';
+      });
     }
   }
 
@@ -172,7 +188,10 @@ class _VideoListScreenState extends State<VideoListScreen> {
   }
 
   Future<void> _loadVideos() async {
-    setState(() => isLoading = true);
+    setState(() {
+      isLoading = true;
+      scanStatus = 'Scanning for videos...';
+    });
 
     try {
       videosByFolder = {};
@@ -180,16 +199,32 @@ class _VideoListScreenState extends State<VideoListScreen> {
 
       // Scan ExcerVids folder
       await _scanDirectory(appDirectory);
+      print('Found ${allVideos.length} videos in ExcerVids');
 
       // Also scan Movies folder if it exists
       if (Platform.isAndroid) {
-        final moviesDir = Directory('/storage/emulated/0/Movies');
-        if (await moviesDir.exists()) {
-          await _scanDirectory(moviesDir);
+        final moviesDirs = [
+          Directory('/storage/emulated/0/Movies'),
+          Directory('/storage/emulated/0/DCIM/Camera'),
+        ];
+
+        for (final moviesDir in moviesDirs) {
+          if (await moviesDir.exists()) {
+            print('Scanning ${moviesDir.path}...');
+            await _scanDirectory(moviesDir);
+          }
         }
       }
+
+      setState(() {
+        scanStatus = 'Found ${allVideos.length} videos';
+      });
+      print('Total videos found: ${allVideos.length}');
     } catch (e) {
       print('Error loading videos: $e');
+      setState(() {
+        scanStatus = 'Error: $e';
+      });
     }
 
     setState(() => isLoading = false);
@@ -197,16 +232,17 @@ class _VideoListScreenState extends State<VideoListScreen> {
 
   Future<void> _scanDirectory(Directory dir) async {
     try {
-      final entities = dir.listSync();
+      final entities = await dir.list().toList();
 
       for (var entity in entities) {
         if (entity is Directory) {
           await _scanDirectory(entity);
         } else if (entity is File) {
-          if (entity.path.toLowerCase().endsWith('.mp4') ||
-              entity.path.toLowerCase().endsWith('.mov') ||
-              entity.path.toLowerCase().endsWith('.avi') ||
-              entity.path.toLowerCase().endsWith('.mkv')) {
+          final lowercasePath = entity.path.toLowerCase();
+          if (lowercasePath.endsWith('.mp4') ||
+              lowercasePath.endsWith('.mov') ||
+              lowercasePath.endsWith('.avi') ||
+              lowercasePath.endsWith('.mkv')) {
 
             final folderPath = entity.parent.path;
             final folderName = folderPath.split('/').last;
@@ -216,6 +252,7 @@ class _VideoListScreenState extends State<VideoListScreen> {
             }
             videosByFolder[folderName]!.add(entity);
             allVideos.add(entity);
+            print('Found video: ${entity.path}');
           }
         }
       }
@@ -354,6 +391,14 @@ class _VideoListScreenState extends State<VideoListScreen> {
               ],
             ),
           ),
+          if (scanStatus.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              child: Text(
+                scanStatus,
+                style: const TextStyle(fontSize: 12, color: Colors.orange),
+              ),
+            ),
           Expanded(
             child: isLoading
                 ? const Center(child: CircularProgressIndicator())
@@ -367,7 +412,7 @@ class _VideoListScreenState extends State<VideoListScreen> {
                   const Text('No videos found'),
                   const SizedBox(height: 8),
                   Text(
-                    'Scanning:\n${appDirectory.path}\n/storage/emulated/0/Movies',
+                    'Scanning:\n${appDirectory.path}\n/storage/emulated/0/Movies\n\n$scanStatus',
                     style: const TextStyle(fontSize: 12, color: Colors.grey),
                     textAlign: TextAlign.center,
                   ),
@@ -438,13 +483,16 @@ class VideoPlayerScreen extends StatefulWidget {
   State<VideoPlayerScreen> createState() => _VideoPlayerScreenState();
 }
 
-class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
+class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindingObserver {
   late VideoPlayerController _controller;
   bool _isInitialized = false;
+  bool _isPlayingInBackground = false;
+  Duration _lastPosition = Duration.zero;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _controller = VideoPlayerController.file(widget.videoFile)
       ..initialize().then((_) {
         setState(() => _isInitialized = true);
@@ -454,8 +502,48 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _controller.dispose();
+    if (_isPlayingInBackground && audioHandler != null) {
+      audioHandler!.stop();
+    }
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      // App going to background - switch to audio only
+      if (_controller.value.isPlaying && audioHandler != null) {
+        _lastPosition = _controller.value.position;
+        _controller.pause();
+        _startBackgroundAudio();
+      }
+    } else if (state == AppLifecycleState.resumed) {
+      // App coming back - stop audio and resume video
+      if (_isPlayingInBackground && audioHandler != null) {
+        audioHandler!.stop();
+        _isPlayingInBackground = false;
+        _controller.seekTo(_lastPosition);
+        _controller.play();
+      }
+    }
+  }
+
+  Future<void> _startBackgroundAudio() async {
+    if (audioHandler == null) return;
+
+    final fileName = widget.videoFile.path.split('/').last;
+    await audioHandler!.playFile(widget.videoFile.path, fileName);
+
+    // Seek to current position
+    if (_lastPosition > Duration.zero) {
+      await audioHandler!.seek(_lastPosition);
+    }
+
+    setState(() => _isPlayingInBackground = true);
   }
 
   @override
@@ -509,6 +597,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                 ),
               ],
             ),
+            if (_isPlayingInBackground)
+              const Padding(
+                padding: EdgeInsets.all(8.0),
+                child: Text(
+                  'Audio playing in background',
+                  style: TextStyle(color: Colors.green),
+                ),
+              ),
           ],
         )
             : const CircularProgressIndicator(),
