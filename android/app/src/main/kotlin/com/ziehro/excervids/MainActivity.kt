@@ -67,16 +67,20 @@ class MainActivity: AudioServiceActivity() {
 
                 tracks.groups.forEachIndexed { groupIndex, trackGroup ->
                     if (trackGroup.type == C.TRACK_TYPE_AUDIO) {
-                        val format = trackGroup.getTrackFormat(0)
-                        audioTracks.add(mapOf(
-                            "groupIndex" to groupIndex,
-                            "trackIndex" to 0,
-                            "language" to (format.language ?: "und"),
-                            "label" to (format.label ?: format.language ?: "Audio ${audioTracks.size + 1}"),
-                            "channelCount" to format.channelCount,
-                            "sampleRate" to format.sampleRate,
-                            "bitrate" to format.bitrate
-                        ))
+                        // Check each track in the group
+                        for (trackIndex in 0 until trackGroup.length) {
+                            val format = trackGroup.getTrackFormat(trackIndex)
+                            audioTracks.add(mapOf(
+                                "groupIndex" to groupIndex,
+                                "trackIndex" to trackIndex,
+                                "language" to (format.language ?: "und"),
+                                "label" to (format.label ?: format.language ?: "Audio ${audioTracks.size + 1}"),
+                                "channelCount" to format.channelCount,
+                                "sampleRate" to format.sampleRate,
+                                "bitrate" to format.bitrate,
+                                "codec" to (format.sampleMimeType ?: "unknown")
+                            ))
+                        }
                     }
                 }
 
@@ -94,7 +98,7 @@ class MainActivity: AudioServiceActivity() {
                 val builder = selector.parameters.buildUpon()
                 builder.clearOverridesOfType(C.TRACK_TYPE_AUDIO)
                 builder.addOverride(
-                    TrackSelectionOverride(trackGroup.mediaTrackGroup, 0)
+                    TrackSelectionOverride(trackGroup.mediaTrackGroup, listOf(0))
                 )
                 selector.setParameters(builder.build())
             }

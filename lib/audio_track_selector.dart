@@ -13,9 +13,12 @@ class AudioTrackSelector {
     }
   }
 
-  static Future<void> setAudioTrack(int groupIndex) async {
+  static Future<void> setAudioTrack(int groupIndex, int trackIndex) async {
     try {
-      await platform.invokeMethod('setAudioTrack', {'groupIndex': groupIndex});
+      await platform.invokeMethod('setAudioTrack', {
+        'groupIndex': groupIndex,
+        'trackIndex': trackIndex,
+      });
     } catch (e) {
       print('Error setting audio track: $e');
     }

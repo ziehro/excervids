@@ -558,22 +558,32 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
             mainAxisSize: MainAxisSize.min,
             children: _audioTracks.asMap().entries.map((entry) {
               final track = entry.value;
-              final isSelected = _selectedTrackGroupIndex == track['groupIndex'];
+              final isSelected = _selectedTrackGroupIndex == track['groupIndex'] &&
+                  _selectedTrackIndex == track['trackIndex'];
               return ListTile(
                 leading: Radio<int>(
-                  value: track['groupIndex'] as int,
-                  groupValue: _selectedTrackGroupIndex,
+                  value: entry.key,
+                  groupValue: _audioTracks.indexWhere((t) =>
+                  t['groupIndex'] == _selectedTrackGroupIndex &&
+                      t['trackIndex'] == _selectedTrackIndex
+                  ),
                   onChanged: (value) async {
                     if (value != null) {
-                      await AudioTrackSelector.setAudioTrack(value);
-                      setState(() => _selectedTrackGroupIndex = value);
+                      await AudioTrackSelector.setAudioTrack(
+                        track['groupIndex'] as int,
+                        track['trackIndex'] as int,
+                      );
+                      setState(() {
+                        _selectedTrackGroupIndex = track['groupIndex'] as int;
+                        _selectedTrackIndex = track['trackIndex'] as int;
+                      });
                       Navigator.pop(context);
                     }
                   },
                 ),
                 title: Text(track['label'] ?? 'Track ${entry.key + 1}'),
                 subtitle: Text(
-                    'Lang: ${track['language']} | ${track['channelCount']} ch | ${(track['sampleRate'] / 1000).toStringAsFixed(1)} kHz'
+                    'Lang: ${track['language']} | ${track['codec']} | ${track['channelCount']} ch'
                 ),
               );
             }).toList(),
