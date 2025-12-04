@@ -8,6 +8,8 @@ import 'package:audio_service/audio_service.dart';
 import 'dart:io';
 import 'dart:math';
 
+import 'audio_track_selector.dart';
+
 AudioPlayerHandler? audioHandler;
 
 void main() async {
@@ -514,11 +516,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
   late VideoPlayerController _controller;
   bool _isInitialized = false;
   bool _isPlayingInBackground = false;
+  List<Map<String, dynamic>> _audioTracks = [];
+  int _selectedTrackGroupIndex = 0;
+  int _selectedTrackIndex = 0;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _loadAudioTracks();
     _controller = VideoPlayerController.file(widget.videoFile)
       ..initialize().then((_) {
         if (mounted) {
@@ -528,14 +534,53 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
       });
   }
 
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    if (_isPlayingInBackground && audioHandler != null) {
-      audioHandler!.stop();
+  Future<void> _loadAudioTracks() async {
+    final tracks = await AudioTrackSelector.getAudioTracks(widget.videoFile.path);
+    if (mounted) {
+      setState(() => _audioTracks = tracks);
     }
-    _controller.dispose();
-    super.dispose();
+  }
+
+  void _showAudioTrackDialog() {
+    if (_audioTracks.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No audio tracks available')),
+      );
+      return;
+    }
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Select Audio Track'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: _audioTracks.asMap().entries.map((entry) {
+              final track = entry.value;
+              final isSelected = _selectedTrackGroupIndex == track['groupIndex'];
+              return ListTile(
+                leading: Radio<int>(
+                  value: track['groupIndex'] as int,
+                  groupValue: _selectedTrackGroupIndex,
+                  onChanged: (value) async {
+                    if (value != null) {
+                      await AudioTrackSelector.setAudioTrack(value);
+                      setState(() => _selectedTrackGroupIndex = value);
+                      Navigator.pop(context);
+                    }
+                  },
+                ),
+                title: Text(track['label'] ?? 'Track ${entry.key + 1}'),
+                subtitle: Text(
+                    'Lang: ${track['language']} | ${track['channelCount']} ch | ${(track['sampleRate'] / 1000).toStringAsFixed(1)} kHz'
+                ),
+              );
+            }).toList(),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -543,14 +588,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
     super.didChangeAppLifecycleState(state);
 
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
-      // Screen turning off - switch to audio only
       if (_controller.value.isPlaying && audioHandler != null) {
         final position = _controller.value.position;
         _controller.pause();
         _startBackgroundAudio(position);
       }
     } else if (state == AppLifecycleState.resumed) {
-      // Screen turning back on - switch back to video and auto-play
       if (_isPlayingInBackground) {
         _resumeVideoFromAudio();
       }
@@ -572,19 +615,25 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
   Future<void> _resumeVideoFromAudio() async {
     if (audioHandler == null) return;
 
-    // Get current audio position before stopping
     final audioPosition = audioHandler!.player.position;
-
-    // Stop audio
     await audioHandler!.stop();
 
     if (mounted) {
       setState(() => _isPlayingInBackground = false);
-
-      // Seek video to audio position and auto-resume playback
       await _controller.seekTo(audioPosition);
       await _controller.play();
     }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    if (_isPlayingInBackground && audioHandler != null) {
+      audioHandler!.stop();
+    }
+    _controller.dispose();
+    AudioTrackSelector.releasePlayer();
+    super.dispose();
   }
 
   @override
@@ -594,6 +643,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         title: Text(widget.videoFile.path.split('/').last),
+        actions: [
+          if (_audioTracks.length > 1)
+            IconButton(
+              icon: const Icon(Icons.audiotrack),
+              onPressed: _showAudioTrackDialog,
+              tooltip: 'Audio Tracks',
+            ),
+        ],
       ),
       body: Center(
         child: _isInitialized
@@ -609,30 +666,18 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 IconButton(
-                  icon: Icon(
-                    _controller.value.isPlaying
-                        ? Icons.pause
-                        : Icons.play_arrow,
-                  ),
+                  icon: Icon(_controller.value.isPlaying ? Icons.pause : Icons.play_arrow),
                   onPressed: () {
                     setState(() {
-                      _controller.value.isPlaying
-                          ? _controller.pause()
-                          : _controller.play();
+                      _controller.value.isPlaying ? _controller.pause() : _controller.play();
                     });
                   },
                 ),
                 IconButton(
-                  icon: Icon(
-                    _controller.value.volume > 0
-                        ? Icons.volume_up
-                        : Icons.volume_off,
-                  ),
+                  icon: Icon(_controller.value.volume > 0 ? Icons.volume_up : Icons.volume_off),
                   onPressed: () {
                     setState(() {
-                      _controller.setVolume(
-                        _controller.value.volume > 0 ? 0 : 1,
-                      );
+                      _controller.setVolume(_controller.value.volume > 0 ? 0 : 1);
                     });
                   },
                 ),
@@ -641,10 +686,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
             if (_isPlayingInBackground)
               const Padding(
                 padding: EdgeInsets.all(8.0),
-                child: Text(
-                  'Audio playing in background',
-                  style: TextStyle(color: Colors.green),
-                ),
+                child: Text('Audio playing in background', style: TextStyle(color: Colors.green)),
               ),
           ],
         )
