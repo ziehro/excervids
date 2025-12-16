@@ -15,6 +15,7 @@ dependencies:
   shared_preferences: ^2.2.2
   audio_service: ^0.18.12
   just_audio: ^0.9.36
+  wakelock_plus: ^1.2.0
 
 dev_dependencies:
   flutter_test:
