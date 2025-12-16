@@ -675,7 +675,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
   }
 
   @override
+  void didUpdateWidget(VideoPlayerScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_controller.value.isPlaying) {
+      WakelockPlus.enable();
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    // Ensure wakelock is active when playing
+    if (_isInitialized && _controller.value.isPlaying) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        WakelockPlus.enable();
+      });
+    }
+
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -722,9 +737,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
                                 setState(() {
                                   if (_controller.value.isPlaying) {
                                     _controller.pause();
+                                    WakelockPlus.disable();
                                     _hideTimer?.cancel();
                                   } else {
                                     _controller.play();
+                                    WakelockPlus.enable();
                                     _startHideTimer();
                                   }
                                 });
