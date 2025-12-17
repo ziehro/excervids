@@ -1,783 +1,222 @@
 import 'package:flutter/material.dart';
-import 'package:video_player/video_player.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:just_audio/just_audio.dart';
-import 'package:audio_service/audio_service.dart';
-import 'dart:io';
-import 'dart:math';
-import 'dart:async';
-import 'package:wakelock_plus/wakelock_plus.dart';
+import 'p90x3_screen.dart';
+// import your existing video player screen here
+// import 'video_player_screen.dart';
 
-import 'audio_track_selector.dart';
-
-AudioPlayerHandler? audioHandler;
-
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-
-  try {
-    audioHandler = await AudioService.init(
-      builder: () => AudioPlayerHandler(),
-      config: const AudioServiceConfig(
-        androidNotificationChannelId: 'com.ziehro.excervids.channel.audio',
-        androidNotificationChannelName: 'ExcerVids Audio',
-        androidNotificationOngoing: true,
-      ),
-    ) as AudioPlayerHandler;
-  } catch (e) {
-    print('Failed to initialize audio service: $e');
-    // Continue without audio service - video playback will still work
-  }
-
-  runApp(const ExcerVidsApp());
+void main() {
+  runApp(const MyApp());
 }
 
-class AudioPlayerHandler extends BaseAudioHandler {
-  final AudioPlayer _player = AudioPlayer();
-
-  // Expose player for position tracking
-  AudioPlayer get player => _player;
-
-  AudioPlayerHandler() {
-    _player.playbackEventStream.listen((event) {
-      playbackState.add(playbackState.value.copyWith(
-        playing: _player.playing,
-        processingState: {
-          ProcessingState.idle: AudioProcessingState.idle,
-          ProcessingState.loading: AudioProcessingState.loading,
-          ProcessingState.buffering: AudioProcessingState.buffering,
-          ProcessingState.ready: AudioProcessingState.ready,
-          ProcessingState.completed: AudioProcessingState.completed,
-        }[_player.processingState]!,
-      ));
-    });
-  }
-
-  Future<void> playFile(String path, String title) async {
-    mediaItem.add(MediaItem(
-      id: path,
-      title: title,
-      displayTitle: title,
-    ));
-
-    await _player.setFilePath(path);
-    _player.play();
-  }
-
-  @override
-  Future<void> play() => _player.play();
-
-  @override
-  Future<void> pause() => _player.pause();
-
-  @override
-  Future<void> stop() async {
-    await _player.stop();
-    await super.stop();
-  }
-
-  @override
-  Future<void> seek(Duration position) => _player.seek(position);
-}
-
-class ExcerVidsApp extends StatelessWidget {
-  const ExcerVidsApp({Key? key}) : super(key: key);
+class MyApp extends StatelessWidget {
+  const MyApp({Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'ExcerVids',
-      theme: ThemeData.dark(),
-      home: const VideoListScreen(),
+      title: 'Workout Videos',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.blue,
+          brightness: Brightness.light,
+        ),
+        useMaterial3: true,
+        fontFamily: 'Roboto',
+      ),
+      home: const MainScreen(),
     );
   }
 }
 
-class VideoListScreen extends StatefulWidget {
-  const VideoListScreen({Key? key}) : super(key: key);
+class MainScreen extends StatefulWidget {
+  const MainScreen({Key? key}) : super(key: key);
 
   @override
-  State<VideoListScreen> createState() => _VideoListScreenState();
+  State<MainScreen> createState() => _MainScreenState();
 }
 
-class _VideoListScreenState extends State<VideoListScreen> {
-  Map<String, List<File>> videosByFolder = {};
-  List<File> allVideos = [];
-  late Directory appDirectory;
-  bool isLoading = true;
-  SharedPreferences? prefs;
-  List<String> playedVideos = [];
-  String? lastPlayedDate;
-  String scanStatus = '';
+class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateMixin {
+  int _currentIndex = 0;
+  late AnimationController _animationController;
+
+  final List<Widget> _screens = [
+    // Replace this with your existing video player screen
+    // const VideoPlayerScreen(),
+    const PlaceholderVideoScreen(),
+    const P90X3Screen(),
+  ];
 
   @override
   void initState() {
     super.initState();
-    _initializeApp();
-  }
-
-  Future<void> _initializeApp() async {
-    try {
-      await Future.delayed(const Duration(milliseconds: 500));
-      await _requestPermissions();
-      await _setupDirectory();
-      await _loadPreferences();
-      await _loadVideos();
-    } catch (e) {
-      print('Initialization error: $e');
-      setState(() {
-        isLoading = false;
-        scanStatus = 'Error: $e';
-      });
-    }
-  }
-
-  Future<void> _loadPreferences() async {
-    try {
-      prefs = await SharedPreferences.getInstance();
-      final today = DateTime.now().toString().split(' ')[0];
-      lastPlayedDate = prefs?.getString('lastPlayedDate');
-
-      if (lastPlayedDate != today) {
-        playedVideos = [];
-        await prefs?.setStringList('playedVideos', []);
-        await prefs?.setString('lastPlayedDate', today);
-        lastPlayedDate = today;
-      } else {
-        playedVideos = prefs?.getStringList('playedVideos') ?? [];
-      }
-    } catch (e) {
-      print('Error loading preferences: $e');
-      playedVideos = [];
-    }
-  }
-
-  Future<void> _requestPermissions() async {
-    try {
-      if (Platform.isAndroid) {
-        final storageStatus = await Permission.storage.request();
-        print('Storage permission: $storageStatus');
-
-        final manageStatus = await Permission.manageExternalStorage.request();
-        print('Manage external storage: $manageStatus');
-
-        await Permission.notification.request();
-
-        setState(() {
-          scanStatus = 'Permissions: storage=$storageStatus, manage=$manageStatus';
-        });
-      }
-    } catch (e) {
-      print('Permission error: $e');
-      setState(() {
-        scanStatus = 'Permission error: $e';
-      });
-    }
-  }
-
-  Future<void> _setupDirectory() async {
-    if (Platform.isAndroid) {
-      // Main ExcerVids folder
-      final excerVidsDir = Directory('/storage/emulated/0/Download/ExcerVids');
-      if (!await excerVidsDir.exists()) {
-        await excerVidsDir.create(recursive: true);
-      }
-      appDirectory = excerVidsDir;
-    } else {
-      final directory = await getApplicationDocumentsDirectory();
-      appDirectory = Directory('${directory.path}/ExcerVids');
-      if (!await appDirectory.exists()) {
-        await appDirectory.create(recursive: true);
-      }
-    }
-  }
-
-  Future<void> _loadVideos() async {
-    setState(() {
-      isLoading = true;
-      scanStatus = 'Scanning for videos...';
-    });
-
-    try {
-      videosByFolder = {};
-      allVideos = [];
-
-      // Scan ExcerVids folder
-      await _scanDirectory(appDirectory);
-      print('Found ${allVideos.length} videos in ExcerVids');
-
-      // Also scan Movies folder if it exists
-      if (Platform.isAndroid) {
-        final moviesDirs = [
-          Directory('/storage/emulated/0/Movies'),
-          Directory('/storage/emulated/0/DCIM/Camera'),
-        ];
-
-        for (final moviesDir in moviesDirs) {
-          if (await moviesDir.exists()) {
-            print('Scanning ${moviesDir.path}...');
-            await _scanDirectory(moviesDir);
-          }
-        }
-      }
-
-      setState(() {
-        scanStatus = 'Found ${allVideos.length} videos';
-      });
-      print('Total videos found: ${allVideos.length}');
-    } catch (e) {
-      print('Error loading videos: $e');
-      setState(() {
-        scanStatus = 'Error: $e';
-      });
-    }
-
-    setState(() => isLoading = false);
-  }
-
-  Future<void> _scanDirectory(Directory dir) async {
-    try {
-      final entities = await dir.list().toList();
-
-      for (var entity in entities) {
-        if (entity is Directory) {
-          await _scanDirectory(entity);
-        } else if (entity is File) {
-          final lowercasePath = entity.path.toLowerCase();
-          if (lowercasePath.endsWith('.mp4') ||
-              lowercasePath.endsWith('.mov') ||
-              lowercasePath.endsWith('.avi') ||
-              lowercasePath.endsWith('.mkv')) {
-
-            final folderPath = entity.parent.path;
-            final folderName = folderPath.split('/').last;
-
-            if (!videosByFolder.containsKey(folderName)) {
-              videosByFolder[folderName] = [];
-            }
-            videosByFolder[folderName]!.add(entity);
-            allVideos.add(entity);
-            print('Found video: ${entity.path}');
-          }
-        }
-      }
-    } catch (e) {
-      print('Error scanning directory ${dir.path}: $e');
-    }
-  }
-
-  void _deleteVideo(File file) async {
-    await file.delete();
-    await _loadVideos();
-  }
-
-  void _playVideo(File file) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => VideoPlayerScreen(videoFile: file),
-      ),
+    _animationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 200),
     );
-  }
-
-  Future<void> _playAudioOnly(File file) async {
-    if (audioHandler == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Audio service not available')),
-        );
-      }
-      return;
-    }
-
-    final fileName = file.path.split('/').last;
-    await audioHandler!.playFile(file.path, fileName);
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Playing audio: $fileName'),
-          action: SnackBarAction(
-            label: 'Stop',
-            onPressed: () => audioHandler?.stop(),
-          ),
-        ),
-      );
-    }
-  }
-
-  Future<void> _playDailyVideo({bool audioOnly = false}) async {
-    if (allVideos.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No videos available')),
-      );
-      return;
-    }
-
-    final unplayedVideos = allVideos.where((file) {
-      return !playedVideos.contains(file.path);
-    }).toList();
-
-    if (unplayedVideos.isEmpty) {
-      playedVideos = [];
-      await prefs?.setStringList('playedVideos', []);
-      _playDailyVideo(audioOnly: audioOnly);
-      return;
-    }
-
-    final random = Random();
-    final randomVideo = unplayedVideos[random.nextInt(unplayedVideos.length)];
-
-    playedVideos.add(randomVideo.path);
-    await prefs?.setStringList('playedVideos', playedVideos);
-
-    if (audioOnly) {
-      await _playAudioOnly(randomVideo);
-    } else {
-      _playVideo(randomVideo);
-    }
-  }
-
-  Future<void> _playRandomFromFolder(String folderName) async {
-    final videos = videosByFolder[folderName]!;
-
-    final unplayedVideos = videos.where((file) {
-      return !playedVideos.contains(file.path);
-    }).toList();
-
-    final videosToPlay = unplayedVideos.isEmpty ? videos : unplayedVideos;
-
-    final random = Random();
-    final randomVideo = videosToPlay[random.nextInt(videosToPlay.length)];
-
-    playedVideos.add(randomVideo.path);
-    await prefs?.setStringList('playedVideos', playedVideos);
-
-    _playVideo(randomVideo);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final unplayedCount = allVideos.where((f) => !playedVideos.contains(f.path)).length;
-    final sortedFolders = videosByFolder.keys.toList()..sort();
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('ExcerVids'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.stop),
-            onPressed: audioHandler != null ? () => audioHandler!.stop() : null,
-            tooltip: 'Stop Audio',
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _loadVideos,
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              children: [
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: allVideos.isEmpty ? null : () => _playDailyVideo(audioOnly: false),
-                    icon: const Icon(Icons.shuffle),
-                    label: Text('Random Video ($unplayedCount left)'),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.all(16),
-                      backgroundColor: Colors.blue,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: (allVideos.isEmpty || audioHandler == null)
-                        ? null
-                        : () => _playDailyVideo(audioOnly: true),
-                    icon: const Icon(Icons.headphones),
-                    label: Text(audioHandler == null
-                        ? 'Audio Service Unavailable'
-                        : 'Random Audio (Background)'),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.all(16),
-                      backgroundColor: Colors.green,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          if (scanStatus.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0),
-              child: Text(
-                scanStatus,
-                style: const TextStyle(fontSize: 12, color: Colors.orange),
-              ),
-            ),
-          Expanded(
-            child: isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : allVideos.isEmpty
-                ? Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.video_library, size: 64, color: Colors.grey),
-                  const SizedBox(height: 16),
-                  const Text('No videos found'),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Scanning:\n${appDirectory.path}\n/storage/emulated/0/Movies\n\n$scanStatus',
-                    style: const TextStyle(fontSize: 12, color: Colors.grey),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            )
-                : ListView.builder(
-              itemCount: sortedFolders.length,
-              itemBuilder: (context, index) {
-                final folderName = sortedFolders[index];
-                final videos = videosByFolder[folderName]!;
-                final unplayedInFolder = videos.where((v) => !playedVideos.contains(v.path)).length;
-
-                return ExpansionTile(
-                  leading: const Icon(Icons.folder),
-                  title: Text(folderName),
-                  subtitle: Text('${videos.length} videos ($unplayedInFolder unplayed)'),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.shuffle, color: Colors.blue),
-                    onPressed: () => _playRandomFromFolder(folderName),
-                    tooltip: 'Play random from folder',
-                  ),
-                  children: videos.map((video) {
-                    final name = video.path.split('/').last;
-                    final isPlayed = playedVideos.contains(video.path);
-
-                    return ListTile(
-                      contentPadding: const EdgeInsets.only(left: 72, right: 16),
-                      leading: Icon(
-                        Icons.play_circle_outline,
-                        color: isPlayed ? Colors.grey : null,
-                      ),
-                      title: Text(
-                        name,
-                        style: TextStyle(
-                          color: isPlayed ? Colors.grey : null,
-                        ),
-                      ),
-                      subtitle: isPlayed ? const Text('Played today', style: TextStyle(fontSize: 12)) : null,
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            icon: const Icon(Icons.headphones, size: 20),
-                            onPressed: audioHandler != null
-                                ? () => _playAudioOnly(video)
-                                : null,
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.delete),
-                            onPressed: () => _deleteVideo(video),
-                          ),
-                        ],
-                      ),
-                      onTap: () => _playVideo(video),
-                    );
-                  }).toList(),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class VideoPlayerScreen extends StatefulWidget {
-  final File videoFile;
-
-  const VideoPlayerScreen({Key? key, required this.videoFile}) : super(key: key);
-
-  @override
-  State<VideoPlayerScreen> createState() => _VideoPlayerScreenState();
-}
-
-class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindingObserver {
-  late VideoPlayerController _controller;
-  bool _isInitialized = false;
-  bool _isPlayingInBackground = false;
-  List<Map<String, dynamic>> _audioTracks = [];
-  int _selectedTrackGroupIndex = 0;
-  int _selectedTrackIndex = 0;
-  bool _showControls = true;
-  Timer? _hideTimer;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    _loadAudioTracks();
-    _controller = VideoPlayerController.file(widget.videoFile)
-      ..initialize().then((_) {
-        if (mounted) {
-          setState(() => _isInitialized = true);
-          _controller.play();
-          WakelockPlus.enable();
-          _startHideTimer();
-        }
-      });
-  }
-
-  void _startHideTimer() {
-    _hideTimer?.cancel();
-    _hideTimer = Timer(const Duration(seconds: 2), () {
-      if (mounted) {
-        setState(() => _showControls = false);
-      }
-    });
-  }
-
-  void _toggleControls() {
-    setState(() {
-      _showControls = !_showControls;
-      if (_showControls) {
-        _startHideTimer();
-      }
-    });
-  }
-
-  Future<void> _loadAudioTracks() async {
-    final tracks = await AudioTrackSelector.getAudioTracks(widget.videoFile.path);
-    if (mounted) {
-      setState(() => _audioTracks = tracks);
-    }
-  }
-
-  void _showAudioTrackDialog() {
-    if (_audioTracks.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No audio tracks available')),
-      );
-      return;
-    }
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Select Audio Track'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: _audioTracks.asMap().entries.map((entry) {
-              final track = entry.value;
-              final isSelected = _selectedTrackGroupIndex == track['groupIndex'] &&
-                  _selectedTrackIndex == track['trackIndex'];
-              return ListTile(
-                leading: Radio<int>(
-                  value: entry.key,
-                  groupValue: _audioTracks.indexWhere((t) =>
-                  t['groupIndex'] == _selectedTrackGroupIndex &&
-                      t['trackIndex'] == _selectedTrackIndex
-                  ),
-                  onChanged: (value) async {
-                    if (value != null) {
-                      await AudioTrackSelector.setAudioTrack(
-                        track['groupIndex'] as int,
-                        track['trackIndex'] as int,
-                      );
-                      setState(() {
-                        _selectedTrackGroupIndex = track['groupIndex'] as int;
-                        _selectedTrackIndex = track['trackIndex'] as int;
-                      });
-                      Navigator.pop(context);
-                    }
-                  },
-                ),
-                title: Text(track['label'] ?? 'Track ${entry.key + 1}'),
-                subtitle: Text(
-                    'Lang: ${track['language']} | ${track['codec']} | ${track['channelCount']} ch'
-                ),
-              );
-            }).toList(),
-          ),
-        ),
-      ),
-    );
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
-
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
-      if (_controller.value.isPlaying && audioHandler != null) {
-        final position = _controller.value.position;
-        _controller.pause();
-        WakelockPlus.disable();
-        _startBackgroundAudio(position);
-      }
-    } else if (state == AppLifecycleState.resumed) {
-      if (_isPlayingInBackground) {
-        _resumeVideoFromAudio();
-        WakelockPlus.enable();
-      }
-    }
-  }
-
-  Future<void> _startBackgroundAudio(Duration position) async {
-    if (audioHandler == null) return;
-
-    final fileName = widget.videoFile.path.split('/').last;
-    await audioHandler!.playFile(widget.videoFile.path, fileName);
-    await audioHandler!.seek(position);
-
-    if (mounted) {
-      setState(() => _isPlayingInBackground = true);
-    }
-  }
-
-  Future<void> _resumeVideoFromAudio() async {
-    if (audioHandler == null) return;
-
-    final audioPosition = audioHandler!.player.position;
-    await audioHandler!.stop();
-
-    if (mounted) {
-      setState(() => _isPlayingInBackground = false);
-      await _controller.seekTo(audioPosition);
-      await _controller.play();
-    }
   }
 
   @override
   void dispose() {
-    _hideTimer?.cancel();
-    WakelockPlus.disable();
-    WidgetsBinding.instance.removeObserver(this);
-    if (_isPlayingInBackground && audioHandler != null) {
-      audioHandler!.stop();
-    }
-    _controller.dispose();
-    AudioTrackSelector.releasePlayer();
+    _animationController.dispose();
     super.dispose();
   }
 
-  @override
-  void didUpdateWidget(VideoPlayerScreen oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (_controller.value.isPlaying) {
-      WakelockPlus.enable();
-    }
+  void _onItemTapped(int index) {
+    setState(() {
+      _currentIndex = index;
+    });
+    _animationController.forward(from: 0);
   }
 
   @override
   Widget build(BuildContext context) {
-    // Ensure wakelock is active when playing
-    if (_isInitialized && _controller.value.isPlaying) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        WakelockPlus.enable();
-      });
-    }
-
     return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        title: Text(widget.videoFile.path.split('/').last),
-        actions: [
-          if (_audioTracks.length > 1)
-            IconButton(
-              icon: const Icon(Icons.audiotrack),
-              onPressed: _showAudioTrackDialog,
-              tooltip: 'Audio Tracks',
-            ),
-        ],
+      body: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 300),
+        child: _screens[_currentIndex],
       ),
-      body: _isInitialized
-          ? GestureDetector(
-        onTap: _toggleControls,
-        child: Container(
-          color: Colors.black,
-          child: Center(
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                AspectRatio(
-                  aspectRatio: _controller.value.aspectRatio,
-                  child: VideoPlayer(_controller),
+      bottomNavigationBar: Container(
+        decoration: BoxDecoration(
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 20,
+              offset: const Offset(0, -5),
+            ),
+          ],
+        ),
+        child: NavigationBar(
+          selectedIndex: _currentIndex,
+          onDestinationSelected: _onItemTapped,
+          elevation: 0,
+          height: 70,
+          labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+          destinations: const [
+            NavigationDestination(
+              icon: Icon(Icons.play_circle_outline_rounded),
+              selectedIcon: Icon(Icons.play_circle_rounded),
+              label: 'Videos',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.fitness_center_outlined),
+              selectedIcon: Icon(Icons.fitness_center_rounded),
+              label: 'P90X3',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// Placeholder screen - Replace this with your actual video player screen
+class PlaceholderVideoScreen extends StatelessWidget {
+  const PlaceholderVideoScreen({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Video Player'),
+        centerTitle: true,
+      ),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(32),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      Theme.of(context).primaryColor,
+                      Theme.of(context).primaryColor.withOpacity(0.7),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(24),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Theme.of(context).primaryColor.withOpacity(0.3),
+                      blurRadius: 20,
+                      offset: const Offset(0, 10),
+                    ),
+                  ],
                 ),
-                if (_showControls)
-                  Container(
-                    color: Colors.black54,
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.end,
+                child: const Icon(
+                  Icons.play_circle_rounded,
+                  size: 80,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 32),
+              const Text(
+                'Your Video Player',
+                style: TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Replace this screen with your existing video player widget',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 16,
+                  color: Colors.grey[600],
+                ),
+              ),
+              const SizedBox(height: 32),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.blue.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: Colors.blue.withOpacity(0.3),
+                    width: 2,
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
                       children: [
-                        VideoProgressIndicator(_controller, allowScrubbing: true),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            IconButton(
-                              icon: Icon(
-                                _controller.value.isPlaying ? Icons.pause : Icons.play_arrow,
-                                size: 48,
-                              ),
-                              onPressed: () {
-                                setState(() {
-                                  if (_controller.value.isPlaying) {
-                                    _controller.pause();
-                                    WakelockPlus.disable();
-                                    _hideTimer?.cancel();
-                                  } else {
-                                    _controller.play();
-                                    WakelockPlus.enable();
-                                    _startHideTimer();
-                                  }
-                                });
-                              },
-                            ),
-                            IconButton(
-                              icon: Icon(
-                                _controller.value.volume > 0 ? Icons.volume_up : Icons.volume_off,
-                                size: 32,
-                              ),
-                              onPressed: () {
-                                setState(() {
-                                  _controller.setVolume(_controller.value.volume > 0 ? 0 : 1);
-                                });
-                              },
-                            ),
-                          ],
+                        Icon(
+                          Icons.info_outline_rounded,
+                          color: Colors.blue[700],
                         ),
-                        if (_isPlayingInBackground)
-                          const Padding(
-                            padding: EdgeInsets.all(8.0),
-                            child: Text(
-                              'Audio playing in background',
-                              style: TextStyle(color: Colors.green),
-                            ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Quick Setup',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.blue[700],
                           ),
-                        const SizedBox(height: 20),
+                        ),
                       ],
                     ),
-                  ),
-              ],
-            ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'In main.dart, line 38, replace:\n'
+                          'const PlaceholderVideoScreen()\n\n'
+                          'With your actual screen:\n'
+                          'const YourVideoPlayerScreen()',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.grey[700],
+                        fontFamily: 'Courier',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
         ),
-      )
-          : const Center(child: CircularProgressIndicator()),
+      ),
     );
   }
 }
