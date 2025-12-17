@@ -1,5 +1,5 @@
 class P90X3Schedule {
-  static const Map<String, List<String>> schedules = {
+  static final Map<String, List<String>> schedules = {
     'Classic': [
       'Total Synergistics', 'Agility X', 'X3 Yoga', 'The Challenge',
       'CVX', 'The Warrior', 'Rest or Dynamix',

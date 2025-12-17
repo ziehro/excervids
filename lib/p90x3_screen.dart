@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'p90x3_data.dart';
 import 'dart:math' as math;
+import 'dart:io';
+import 'video_player_screen.dart';
 
 class P90X3Screen extends StatefulWidget {
   const P90X3Screen({Key? key}) : super(key: key);
@@ -94,25 +96,94 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
   }
 
   Future<void> _playVideo(String workoutName, int day) async {
-    final filename = _getVideoFilename(workoutName, day);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Playing: $filename'),
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        backgroundColor: _getWorkoutColor(workoutName),
-      ),
-    );
+    if (workoutName == 'Rest' || workoutName.contains('Rest')) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Rest day - no video to play'),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          backgroundColor: Colors.blueGrey,
+        ),
+      );
+      return;
+    }
+
+    // Search for video file in movies directory
+    final moviesDirs = [
+      Directory('/storage/emulated/0/Movies'),
+      Directory('/storage/emulated/0/Download/ExcerVids'),
+      Directory('/storage/emulated/0/DCIM/Camera'),
+    ];
+
+    File? videoFile;
+
+    // Try different filename patterns
+    final patterns = [
+      _getVideoFilename(workoutName, day),
+      '${workoutName.toLowerCase().replaceAll(' ', '_')}.mp4',
+      '${workoutName.toLowerCase().replaceAll(' ', '-')}.mp4',
+      workoutName,
+    ];
+
+    for (final dir in moviesDirs) {
+      if (!await dir.exists()) continue;
+
+      try {
+        final files = await dir.list().toList();
+        for (var entity in files) {
+          if (entity is File) {
+            final filename = entity.path.split('/').last.toLowerCase();
+
+            // Check if filename matches any pattern
+            for (final pattern in patterns) {
+              if (filename.contains(pattern.toLowerCase()) ||
+                  pattern.toLowerCase().contains(filename.replaceAll('.mp4', ''))) {
+                videoFile = entity;
+                break;
+              }
+            }
+            if (videoFile != null) break;
+          }
+        }
+      } catch (e) {
+        print('Error searching ${dir.path}: $e');
+      }
+      if (videoFile != null) break;
+    }
+
+    if (videoFile == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Video not found: $workoutName\nLooking for: ${patterns[0]}'),
+            duration: const Duration(seconds: 4),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        );
+      }
+      return;
+    }
+
+    // Navigate to video player
+    if (mounted) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => VideoPlayerScreen(videoFile: videoFile!),
+        ),
+      );
+    }
   }
 
   Color _getWorkoutColor(String workout) {
     if (workout.contains('Rest') || workout.contains('Dynamix')) {
       return Colors.blueGrey;
-    } else if (workout.contains('Yoga') || workout.contains('Pilates') || 
-               workout.contains('Isometrix')) {
+    } else if (workout.contains('Yoga') || workout.contains('Pilates') ||
+        workout.contains('Isometrix')) {
       return Colors.purple;
-    } else if (workout.contains('CVX') || workout.contains('MMX') || 
-               workout.contains('Agility')) {
+    } else if (workout.contains('CVX') || workout.contains('MMX') ||
+        workout.contains('Agility')) {
       return Colors.deepOrange;
     } else if (workout.contains('Eccentric') || workout.contains('Challenge')) {
       return Colors.red;
@@ -358,7 +429,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                   ],
                 ),
               ),
-              
+
               // Progress Stats
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -395,9 +466,9 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                   ),
                 ),
               ),
-              
+
               const SizedBox(height: 24),
-              
+
               // Today's Workout Card
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -555,7 +626,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
               ),
 
               const SizedBox(height: 24),
-              
+
               // Calendar Section
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -621,47 +692,47 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                             decoration: BoxDecoration(
                               gradient: isCompleted
                                   ? LinearGradient(
-                                      begin: Alignment.topLeft,
-                                      end: Alignment.bottomRight,
-                                      colors: [
-                                        Colors.green.shade400,
-                                        Colors.green.shade600,
-                                      ],
-                                    )
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [
+                                  Colors.green.shade400,
+                                  Colors.green.shade600,
+                                ],
+                              )
                                   : isToday
-                                      ? LinearGradient(
-                                          begin: Alignment.topLeft,
-                                          end: Alignment.bottomRight,
-                                          colors: [
-                                            Colors.blue.shade400,
-                                            Colors.blue.shade600,
-                                          ],
-                                        )
-                                      : null,
+                                  ? LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [
+                                  Colors.blue.shade400,
+                                  Colors.blue.shade600,
+                                ],
+                              )
+                                  : null,
                               color: isCompleted || isToday
                                   ? null
                                   : isRest
-                                      ? Colors.grey[100]
-                                      : Colors.grey[50],
+                                  ? Colors.grey[100]
+                                  : Colors.grey[50],
                               borderRadius: BorderRadius.circular(14),
                               border: Border.all(
-                                color: isToday 
+                                color: isToday
                                     ? Colors.blue.shade300
                                     : isCompleted
-                                        ? Colors.green.shade300
-                                        : Colors.grey.shade200,
+                                    ? Colors.green.shade300
+                                    : Colors.grey.shade200,
                                 width: 2,
                               ),
                               boxShadow: (isToday || isCompleted)
                                   ? [
-                                      BoxShadow(
-                                        color: (isCompleted 
-                                            ? Colors.green 
-                                            : Colors.blue).withOpacity(0.3),
-                                        blurRadius: 8,
-                                        offset: const Offset(0, 4),
-                                      ),
-                                    ]
+                                BoxShadow(
+                                  color: (isCompleted
+                                      ? Colors.green
+                                      : Colors.blue).withOpacity(0.3),
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 4),
+                                ),
+                              ]
                                   : null,
                             ),
                             child: Stack(
@@ -670,8 +741,8 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                   child: Text(
                                     day.toString(),
                                     style: TextStyle(
-                                      color: isCompleted || isToday 
-                                          ? Colors.white 
+                                      color: isCompleted || isToday
+                                          ? Colors.white
                                           : Colors.black87,
                                       fontWeight: FontWeight.bold,
                                       fontSize: 16,
@@ -953,12 +1024,12 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
   }
 
   Widget _buildProgramCard(
-    String name,
-    String subtitle,
-    String description,
-    IconData icon,
-    Color color,
-  ) {
+      String name,
+      String subtitle,
+      String description,
+      IconData icon,
+      Color color,
+      ) {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
