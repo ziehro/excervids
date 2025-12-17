@@ -5,6 +5,17 @@ import 'dart:math' as math;
 import 'dart:io';
 import 'video_player_screen.dart';
 
+// Color scheme
+class P90X3Colors {
+  static const primary = Color(0xFF0066FF);
+  static const secondary = Color(0xFFFF6B00);
+  static const success = Color(0xFF00C853);
+  static const warning = Color(0xFFFFC107);
+  static const gradientStart = Color(0xFF667eea);
+  static const gradientEnd = Color(0xFF764ba2);
+  static const cardBg = Color(0xFFF8F9FA);
+}
+
 class P90X3Screen extends StatefulWidget {
   const P90X3Screen({Key? key}) : super(key: key);
 
@@ -16,7 +27,9 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
   String? selectedProgram;
   int currentDay = 1;
   Set<int> completedDays = {};
+  Set<int> daysWithAbRipper = {};
   DateTime? programStartDate;
+  bool alignRestToSunday = false;
   late AnimationController _animationController;
 
   @override
@@ -42,6 +55,9 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       currentDay = prefs.getInt('p90x3_current_day') ?? 1;
       final completed = prefs.getStringList('p90x3_completed') ?? [];
       completedDays = completed.map((e) => int.parse(e)).toSet();
+      final abRipper = prefs.getStringList('p90x3_ab_ripper') ?? [];
+      daysWithAbRipper = abRipper.map((e) => int.parse(e)).toSet();
+      alignRestToSunday = prefs.getBool('p90x3_align_rest_sunday') ?? false;
       final startStr = prefs.getString('p90x3_start_date');
       if (startStr != null) {
         programStartDate = DateTime.parse(startStr);
@@ -57,17 +73,68 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       'p90x3_completed',
       completedDays.map((e) => e.toString()).toList(),
     );
+    await prefs.setStringList(
+      'p90x3_ab_ripper',
+      daysWithAbRipper.map((e) => e.toString()).toList(),
+    );
+    await prefs.setBool('p90x3_align_rest_sunday', alignRestToSunday);
     if (programStartDate != null) {
       await prefs.setString('p90x3_start_date', programStartDate!.toIso8601String());
     }
   }
 
-  void _selectProgram(String program) {
+  void _selectProgram(String program) async {
+    // Ask user if they want rest days on Sunday
+    final alignToSunday = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Calendar Alignment',
+            style: TextStyle(fontWeight: FontWeight.bold)),
+        content: const Text(
+          'Do you want rest days to fall on Sundays?\n\n'
+              'This will adjust your start date so that your rest days align with weekends.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('No, start today'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: P90X3Colors.primary,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Yes, align to Sunday',
+                style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (alignToSunday == null) return;
+
     setState(() {
       selectedProgram = program;
       currentDay = 1;
       completedDays.clear();
-      programStartDate = DateTime.now();
+      daysWithAbRipper.clear();
+      alignRestToSunday = alignToSunday;
+
+      // Calculate start date based on alignment preference
+      final today = DateTime.now();
+      if (alignToSunday) {
+        // Find which day of the week day 7 (first rest day) should be
+        // We want it to be Sunday (7)
+        // So day 1 should be Monday (1)
+        final currentWeekday = today.weekday; // 1=Monday, 7=Sunday
+        final desiredWeekday = 1; // Monday
+        final daysToAdjust = (desiredWeekday - currentWeekday) % 7;
+        programStartDate = today.add(Duration(days: daysToAdjust));
+      } else {
+        programStartDate = today;
+      }
     });
     _saveProgress();
   }
@@ -85,6 +152,52 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       }
     });
     _saveProgress();
+  }
+
+  void _goToPreviousDay() {
+    if (currentDay > 1) {
+      setState(() {
+        currentDay--;
+      });
+      _saveProgress();
+    }
+  }
+
+  void _goToNextDay() {
+    if (currentDay < 90) {
+      setState(() {
+        currentDay++;
+      });
+      _saveProgress();
+    }
+  }
+
+  void _resetToday() {
+    setState(() {
+      completedDays.remove(currentDay);
+      daysWithAbRipper.remove(currentDay);
+    });
+    _saveProgress();
+  }
+
+  void _toggleAbRipper(int day) {
+    if (!P90X3Schedule.canHaveAbRipper(selectedProgram!, day)) return;
+
+    setState(() {
+      if (daysWithAbRipper.contains(day)) {
+        daysWithAbRipper.remove(day);
+      } else {
+        daysWithAbRipper.add(day);
+      }
+    });
+    _saveProgress();
+  }
+
+  String _getDayOfWeek(int day) {
+    if (programStartDate == null) return '';
+    final date = programStartDate!.add(Duration(days: day - 1));
+    const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    return weekdays[date.weekday - 1];
   }
 
   String _getVideoFilename(String workoutName, int day) {
@@ -205,98 +318,159 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
   }
 
   void _showDayDialog(int day, String workout, bool isCompleted, bool isRest) {
+    final canHaveAbRipper = P90X3Schedule.canHaveAbRipper(selectedProgram!, day);
+    final hasAbRipper = daysWithAbRipper.contains(day);
+
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: _getWorkoutColor(workout).withOpacity(0.2),
-                borderRadius: BorderRadius.circular(12),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: _getWorkoutColor(workout).withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(
+                  _getWorkoutIcon(workout),
+                  color: _getWorkoutColor(workout),
+                ),
               ),
-              child: Icon(
-                _getWorkoutIcon(workout),
-                color: _getWorkoutColor(workout),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Day $day'),
+                    if (programStartDate != null)
+                      Text(
+                        _getDayOfWeek(day),
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey[600],
+                          fontWeight: FontWeight.normal,
+                        ),
+                      ),
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Text('Day $day'),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              workout,
-              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: (isCompleted ? Colors.green : Colors.grey).withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                workout,
+                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
               ),
-              child: Row(
-                children: [
-                  Icon(
-                    isCompleted ? Icons.check_circle : Icons.pending,
-                    color: isCompleted ? Colors.green : Colors.grey,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    isCompleted ? 'Completed' : 'Pending',
-                    style: TextStyle(
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: (isCompleted ? Colors.green : Colors.grey).withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      isCompleted ? Icons.check_circle : Icons.pending,
                       color: isCompleted ? Colors.green : Colors.grey,
-                      fontWeight: FontWeight.w600,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      isCompleted ? 'Completed' : 'Pending',
+                      style: TextStyle(
+                        color: isCompleted ? Colors.green : Colors.grey,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (canHaveAbRipper) ...[
+                const SizedBox(height: 16),
+                InkWell(
+                  onTap: () {
+                    _toggleAbRipper(day);
+                    setState(() {});
+                  },
+                  borderRadius: BorderRadius.circular(12),
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: hasAbRipper ? Colors.orange : Colors.grey[300]!,
+                        width: 2,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          hasAbRipper
+                              ? Icons.check_box_rounded
+                              : Icons.check_box_outline_blank_rounded,
+                          color: hasAbRipper ? Colors.orange : Colors.grey,
+                        ),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text(
+                            'Add Ab Ripper X',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
+                ),
+              ],
+            ],
           ),
-          if (!isRest)
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+            if (!isRest)
+              ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _playVideo(workout, day);
+                },
+                icon: const Icon(Icons.play_arrow),
+                label: const Text('Play'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _getWorkoutColor(workout),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
             ElevatedButton.icon(
               onPressed: () {
+                _markDayComplete(day);
                 Navigator.pop(context);
-                _playVideo(workout, day);
               },
-              icon: const Icon(Icons.play_arrow),
-              label: const Text('Play'),
+              icon: Icon(isCompleted ? Icons.close : Icons.check),
+              label: Text(isCompleted ? 'Undo' : 'Complete'),
               style: ElevatedButton.styleFrom(
-                backgroundColor: _getWorkoutColor(workout),
+                backgroundColor: isCompleted ? Colors.orange : Colors.green,
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
               ),
             ),
-          ElevatedButton.icon(
-            onPressed: () {
-              _markDayComplete(day);
-              Navigator.pop(context);
-            },
-            icon: Icon(isCompleted ? Icons.close : Icons.check),
-            label: Text(isCompleted ? 'Undo' : 'Complete'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: isCompleted ? Colors.orange : Colors.green,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -307,9 +481,15 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       return _buildProgramSelection();
     }
 
-    final todayWorkout = P90X3Schedule.getWorkoutForDay(selectedProgram!, currentDay);
+    final todayWorkout = P90X3Schedule.getWorkoutForDay(
+      selectedProgram!,
+      currentDay,
+      includeAbRipper: daysWithAbRipper.contains(currentDay),
+    );
     final completedCount = completedDays.length;
     final progressPercent = completedCount / 90;
+    final canHaveAbRipper = P90X3Schedule.canHaveAbRipper(selectedProgram!, currentDay);
+    final hasAbRipper = daysWithAbRipper.contains(currentDay);
 
     return Scaffold(
       body: Container(
@@ -324,461 +504,631 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
           ),
         ),
         child: SafeArea(
-          child: Column(
-            children: [
-              // Custom App Bar
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            Theme.of(context).primaryColor,
-                            Theme.of(context).primaryColor.withOpacity(0.7),
+          child: SingleChildScrollView(
+            child: Column(
+                children: [
+            // Custom App Bar
+            Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [
+                        Theme.of(context).primaryColor,
+                        Theme.of(context).primaryColor.withOpacity(0.7),
+                      ],
+                    ),
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Theme.of(context).primaryColor.withOpacity(0.3),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: const Icon(
+                    Icons.fitness_center_rounded,
+                    color: Colors.white,
+                    size: 28,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'P90X3',
+                        style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1.2,
+                        ),
+                      ),
+                      Text(
+                        selectedProgram!,
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey[600],
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.restart_alt_rounded),
+                  onPressed: () {
+                    showDialog(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(24),
+                        ),
+                        title: const Row(
+                          children: [
+                            Icon(Icons.warning_rounded, color: Colors.orange),
+                            SizedBox(width: 12),
+                            Text('Reset Program?'),
                           ],
                         ),
-                        borderRadius: BorderRadius.circular(16),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Theme.of(context).primaryColor.withOpacity(0.3),
-                            blurRadius: 12,
-                            offset: const Offset(0, 4),
+                        content: const Text('This will clear all your progress and start fresh.'),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('Cancel'),
                           ),
-                        ],
-                      ),
-                      child: const Icon(
-                        Icons.fitness_center_rounded,
-                        color: Colors.white,
-                        size: 28,
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'P90X3',
-                            style: TextStyle(
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 1.2,
-                            ),
-                          ),
-                          Text(
-                            selectedProgram!,
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: Colors.grey[600],
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.restart_alt_rounded),
-                      onPressed: () {
-                        showDialog(
-                          context: context,
-                          builder: (context) => AlertDialog(
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(24),
-                            ),
-                            title: const Row(
-                              children: [
-                                Icon(Icons.warning_rounded, color: Colors.orange),
-                                SizedBox(width: 12),
-                                Text('Reset Program?'),
-                              ],
-                            ),
-                            content: const Text('This will clear all your progress and start fresh.'),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.pop(context),
-                                child: const Text('Cancel'),
+                          ElevatedButton(
+                            onPressed: () {
+                              setState(() {
+                                selectedProgram = null;
+                                completedDays.clear();
+                                currentDay = 1;
+                                programStartDate = null;
+                              });
+                              _saveProgress();
+                              Navigator.pop(context);
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
                               ),
-                              ElevatedButton(
-                                onPressed: () {
-                                  setState(() {
-                                    selectedProgram = null;
-                                    completedDays.clear();
-                                    currentDay = 1;
-                                    programStartDate = null;
-                                  });
-                                  _saveProgress();
-                                  Navigator.pop(context);
-                                },
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.red,
-                                  foregroundColor: Colors.white,
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
+                            ),
+                            child: const Text('Reset'),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+
+          // Progress Stats
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Container(
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(24),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.06),
+                    blurRadius: 24,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  _buildCircularStat('Day', currentDay, 90, Colors.blue),
+                  Container(
+                    width: 1,
+                    height: 50,
+                    color: Colors.grey[200],
+                  ),
+                  _buildCircularStat('Done', completedCount, 90, Colors.green),
+                  Container(
+                    width: 1,
+                    height: 50,
+                    color: Colors.grey[200],
+                  ),
+                  _buildPercentStat('Goal', progressPercent, Colors.orange),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 24),
+
+          // Today's Workout Card
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    _getWorkoutColor(todayWorkout),
+                    _getWorkoutColor(todayWorkout).withOpacity(0.8),
+                  ],
+                ),
+                borderRadius: BorderRadius.circular(28),
+                boxShadow: [
+                  BoxShadow(
+                    color: _getWorkoutColor(todayWorkout).withOpacity(0.4),
+                    blurRadius: 24,
+                    offset: const Offset(0, 12),
+                  ),
+                ],
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(28),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.25),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Icon(
+                            _getWorkoutIcon(todayWorkout),
+                            color: Colors.white,
+                            size: 32,
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'TODAY',
+                                style: TextStyle(
+                                  color: Colors.white.withOpacity(0.9),
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  letterSpacing: 2,
                                 ),
-                                child: const Text('Reset'),
+                              ),
+                              Text(
+                                'Day $currentDay of 90',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ],
                           ),
-                        );
-                      },
-                    ),
-                  ],
-                ),
-              ),
-
-              // Progress Stats
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Container(
-                  padding: const EdgeInsets.all(24),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(24),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.06),
-                        blurRadius: 24,
-                        offset: const Offset(0, 8),
-                      ),
-                    ],
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: [
-                      _buildCircularStat('Day', currentDay, 90, Colors.blue),
-                      Container(
-                        width: 1,
-                        height: 50,
-                        color: Colors.grey[200],
-                      ),
-                      _buildCircularStat('Done', completedCount, 90, Colors.green),
-                      Container(
-                        width: 1,
-                        height: 50,
-                        color: Colors.grey[200],
-                      ),
-                      _buildPercentStat('Goal', progressPercent, Colors.orange),
-                    ],
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 24),
-
-              // Today's Workout Card
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Container(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        _getWorkoutColor(todayWorkout),
-                        _getWorkoutColor(todayWorkout).withOpacity(0.8),
-                      ],
-                    ),
-                    borderRadius: BorderRadius.circular(28),
-                    boxShadow: [
-                      BoxShadow(
-                        color: _getWorkoutColor(todayWorkout).withOpacity(0.4),
-                        blurRadius: 24,
-                        offset: const Offset(0, 12),
-                      ),
-                    ],
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(28),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(14),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.25),
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              child: Icon(
-                                _getWorkoutIcon(todayWorkout),
-                                color: Colors.white,
-                                size: 32,
-                              ),
-                            ),
-                            const SizedBox(width: 16),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'TODAY',
-                                    style: TextStyle(
-                                      color: Colors.white.withOpacity(0.9),
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w600,
-                                      letterSpacing: 2,
-                                    ),
-                                  ),
-                                  Text(
-                                    'Day $currentDay of 90',
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            if (completedDays.contains(currentDay))
-                              Container(
-                                padding: const EdgeInsets.all(8),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.25),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: const Icon(
-                                  Icons.check_circle_rounded,
-                                  color: Colors.white,
-                                  size: 24,
-                                ),
-                              ),
-                          ],
                         ),
-                        const SizedBox(height: 20),
-                        Text(
-                          todayWorkout,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 32,
-                            fontWeight: FontWeight.bold,
-                            height: 1.1,
-                            letterSpacing: 0.5,
+                        if (completedDays.contains(currentDay))
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.25),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.check_circle_rounded,
+                              color: Colors.white,
+                              size: 24,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 24),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                onPressed: todayWorkout.contains('Rest')
-                                    ? null
-                                    : () => _playVideo(todayWorkout, currentDay),
-                                icon: const Icon(Icons.play_arrow_rounded, size: 28),
-                                label: const Text(
-                                  'PLAY WORKOUT',
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                    letterSpacing: 1,
-                                  ),
-                                ),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.white,
-                                  foregroundColor: _getWorkoutColor(todayWorkout),
-                                  disabledBackgroundColor: Colors.white.withOpacity(0.3),
-                                  disabledForegroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(vertical: 18),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                  ),
-                                  elevation: 0,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            AnimatedBuilder(
-                              animation: _animationController,
-                              builder: (context, child) {
-                                return Transform.scale(
-                                  scale: 1.0 + (_animationController.value * 0.2),
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      color: Colors.white.withOpacity(0.25),
-                                      borderRadius: BorderRadius.circular(16),
-                                    ),
-                                    child: IconButton(
-                                      icon: Icon(
-                                        completedDays.contains(currentDay)
-                                            ? Icons.check_circle_rounded
-                                            : Icons.check_circle_outline_rounded,
-                                        size: 36,
-                                      ),
-                                      color: Colors.white,
-                                      onPressed: () => _markDayComplete(currentDay),
-                                      padding: const EdgeInsets.all(12),
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                          ],
-                        ),
                       ],
                     ),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 24),
-
-              // Calendar Section
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text(
-                      '90-Day Calendar',
-                      style: TextStyle(
-                        fontSize: 20,
+                    const SizedBox(height: 20),
+                    Text(
+                      todayWorkout,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 32,
                         fontWeight: FontWeight.bold,
+                        height: 1.1,
+                        letterSpacing: 0.5,
                       ),
                     ),
+
+                    // Day navigation and Ab Ripper toggle
+                    const SizedBox(height: 16),
                     Row(
                       children: [
-                        _buildLegendItem(Colors.green, 'Done'),
+                        // Previous day button
+                        Container(
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: IconButton(
+                            icon: const Icon(Icons.chevron_left_rounded, size: 20),
+                            color: Colors.white,
+                            onPressed: currentDay > 1 ? _goToPreviousDay : null,
+                            tooltip: 'Previous Day',
+                            padding: const EdgeInsets.all(8),
+                            constraints: const BoxConstraints(),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+
+                        // Day of week badge
+                        if (programStartDate != null)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              _getDayOfWeek(currentDay),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+
+                        const Spacer(),
+
+                        // Ab Ripper toggle
+                        if (canHaveAbRipper)
+                          GestureDetector(
+                            onTap: () => _toggleAbRipper(currentDay),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: hasAbRipper
+                                    ? Colors.white.withOpacity(0.3)
+                                    : Colors.white.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: Colors.white.withOpacity(0.5),
+                                  width: 1.5,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    hasAbRipper
+                                        ? Icons.check_box_rounded
+                                        : Icons.check_box_outline_blank_rounded,
+                                    color: Colors.white,
+                                    size: 16,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  const Text(
+                                    'AB',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+
+                        const SizedBox(width: 6),
+
+                        // Reset today button
+                        Container(
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: IconButton(
+                            icon: const Icon(Icons.replay_rounded, size: 20),
+                            color: Colors.white,
+                            onPressed: _resetToday,
+                            tooltip: 'Reset Today',
+                            padding: const EdgeInsets.all(8),
+                            constraints: const BoxConstraints(),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+
+                        // Next day button
+                        Container(
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: IconButton(
+                            icon: const Icon(Icons.chevron_right_rounded, size: 20),
+                            color: Colors.white,
+                            onPressed: currentDay < 90 ? _goToNextDay : null,
+                            tooltip: 'Next Day',
+                            padding: const EdgeInsets.all(8),
+                            constraints: const BoxConstraints(),
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 24),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed: todayWorkout.contains('Rest')
+                                ? null
+                                : () => _playVideo(todayWorkout, currentDay),
+                            icon: const Icon(Icons.play_arrow_rounded, size: 28),
+                            label: const Text(
+                              'PLAY WORKOUT',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1,
+                              ),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.white,
+                              foregroundColor: _getWorkoutColor(todayWorkout),
+                              disabledBackgroundColor: Colors.white.withOpacity(0.3),
+                              disabledForegroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 18),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              elevation: 0,
+                            ),
+                          ),
+                        ),
                         const SizedBox(width: 12),
-                        _buildLegendItem(Colors.blue, 'Today'),
+                        AnimatedBuilder(
+                          animation: _animationController,
+                          builder: (context, child) {
+                            return Transform.scale(
+                              scale: 1.0 + (_animationController.value * 0.2),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.25),
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                                child: IconButton(
+                                  icon: Icon(
+                                    completedDays.contains(currentDay)
+                                        ? Icons.check_circle_rounded
+                                        : Icons.check_circle_outline_rounded,
+                                    size: 36,
+                                  ),
+                                  color: Colors.white,
+                                  onPressed: () => _markDayComplete(currentDay),
+                                  padding: const EdgeInsets.all(12),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
                       ],
                     ),
                   ],
                 ),
               ),
+            ),
+          ),
 
-              const SizedBox(height: 16),
+          const SizedBox(height: 24),
 
-              // Calendar Grid
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(24),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.04),
-                          blurRadius: 20,
-                          offset: const Offset(0, 8),
+          // Calendar Section
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  '90-Day Calendar',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                Row(
+                  children: [
+                    _buildLegendItem(Colors.green, 'Done'),
+                    const SizedBox(width: 12),
+                    _buildLegendItem(Colors.blue, 'Today'),
+                  ],
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
+          // Calendar Grid
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(24),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.04),
+                    blurRadius: 20,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              ),
+              padding: const EdgeInsets.all(16),
+              child: GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 7,
+                  childAspectRatio: 0.95,
+                  crossAxisSpacing: 8,
+                  mainAxisSpacing: 8,
+                ),
+                itemCount: 90,
+                itemBuilder: (context, index) {
+                  final day = index + 1;
+                  final workout = P90X3Schedule.getWorkoutForDay(selectedProgram!, day);
+                  final isCompleted = completedDays.contains(day);
+                  final isToday = day == currentDay;
+                  final isRest = workout.contains('Rest') || workout.contains('Dynamix');
+
+                  return InkWell(
+                    onTap: () => _showDayDialog(day, workout, isCompleted, isRest),
+                    borderRadius: BorderRadius.circular(14),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        gradient: isCompleted
+                            ? LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            Colors.green.shade400,
+                            Colors.green.shade600,
+                          ],
+                        )
+                            : isToday
+                            ? LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            Colors.blue.shade400,
+                            Colors.blue.shade600,
+                          ],
+                        )
+                            : null,
+                        color: isCompleted || isToday
+                            ? null
+                            : isRest
+                            ? Colors.grey[100]
+                            : Colors.grey[50],
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: isToday
+                              ? Colors.blue.shade300
+                              : isCompleted
+                              ? Colors.green.shade300
+                              : Colors.grey.shade200,
+                          width: 2,
                         ),
-                      ],
-                    ),
-                    padding: const EdgeInsets.all(16),
-                    child: GridView.builder(
-                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 7,
-                        childAspectRatio: 1,
-                        crossAxisSpacing: 10,
-                        mainAxisSpacing: 10,
+                        boxShadow: (isToday || isCompleted)
+                            ? [
+                          BoxShadow(
+                            color: (isCompleted
+                                ? Colors.green
+                                : Colors.blue).withOpacity(0.3),
+                            blurRadius: 8,
+                            offset: const Offset(0, 4),
+                          ),
+                        ]
+                            : null,
                       ),
-                      itemCount: 90,
-                      itemBuilder: (context, index) {
-                        final day = index + 1;
-                        final workout = P90X3Schedule.getWorkoutForDay(selectedProgram!, day);
-                        final isCompleted = completedDays.contains(day);
-                        final isToday = day == currentDay;
-                        final isRest = workout.contains('Rest') || workout.contains('Dynamix');
-
-                        return InkWell(
-                          onTap: () => _showDayDialog(day, workout, isCompleted, isRest),
-                          borderRadius: BorderRadius.circular(14),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              gradient: isCompleted
-                                  ? LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [
-                                  Colors.green.shade400,
-                                  Colors.green.shade600,
-                                ],
-                              )
-                                  : isToday
-                                  ? LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [
-                                  Colors.blue.shade400,
-                                  Colors.blue.shade600,
-                                ],
-                              )
-                                  : null,
-                              color: isCompleted || isToday
-                                  ? null
-                                  : isRest
-                                  ? Colors.grey[100]
-                                  : Colors.grey[50],
-                              borderRadius: BorderRadius.circular(14),
-                              border: Border.all(
-                                color: isToday
-                                    ? Colors.blue.shade300
-                                    : isCompleted
-                                    ? Colors.green.shade300
-                                    : Colors.grey.shade200,
-                                width: 2,
-                              ),
-                              boxShadow: (isToday || isCompleted)
-                                  ? [
-                                BoxShadow(
-                                  color: (isCompleted
-                                      ? Colors.green
-                                      : Colors.blue).withOpacity(0.3),
-                                  blurRadius: 8,
-                                  offset: const Offset(0, 4),
-                                ),
-                              ]
-                                  : null,
-                            ),
-                            child: Stack(
+                      child: Stack(
+                        children: [
+                          // Main content centered
+                          Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
                               children: [
-                                Center(
-                                  child: Text(
-                                    day.toString(),
-                                    style: TextStyle(
-                                      color: isCompleted || isToday
-                                          ? Colors.white
-                                          : Colors.black87,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 16,
-                                    ),
+                                // Day number
+                                Text(
+                                  day.toString(),
+                                  style: TextStyle(
+                                    color: isCompleted || isToday
+                                        ? Colors.white
+                                        : Colors.black87,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
                                   ),
                                 ),
-                                if (isCompleted)
-                                  Positioned(
-                                    top: 4,
-                                    right: 4,
-                                    child: Container(
-                                      padding: const EdgeInsets.all(2),
-                                      decoration: BoxDecoration(
-                                        color: Colors.white.withOpacity(0.3),
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: const Icon(
-                                        Icons.check_rounded,
-                                        color: Colors.white,
-                                        size: 14,
-                                      ),
+                                // Day of week
+                                if (programStartDate != null)
+                                  Text(
+                                    _getDayOfWeek(day),
+                                    style: TextStyle(
+                                      color: isCompleted || isToday
+                                          ? Colors.white.withOpacity(0.8)
+                                          : Colors.grey[600],
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w600,
                                     ),
                                   ),
                               ],
                             ),
                           ),
-                        );
-                      },
+                          // Completed checkmark
+                          if (isCompleted)
+                            Positioned(
+                              top: 1,
+                              right: 1,
+                              child: Container(
+                                padding: const EdgeInsets.all(1),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.3),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(
+                                  Icons.check_rounded,
+                                  color: Colors.white,
+                                  size: 10,
+                                ),
+                              ),
+                            ),
+                          // Ab Ripper indicator
+                          if (daysWithAbRipper.contains(day))
+                            Positioned(
+                              bottom: 1,
+                              left: 0,
+                              right: 0,
+                              child: Center(
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+                                  decoration: BoxDecoration(
+                                    color: (isCompleted || isToday
+                                        ? Colors.white
+                                        : Colors.orange).withOpacity(0.9),
+                                    borderRadius: BorderRadius.circular(3),
+                                  ),
+                                  child: Text(
+                                    'AB',
+                                    style: TextStyle(
+                                      color: isCompleted || isToday
+                                          ? (isCompleted ? Colors.green : Colors.blue)
+                                          : Colors.white,
+                                      fontSize: 7,
+                                      fontWeight: FontWeight.bold,
+                                      height: 1.0,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
                     ),
-                  ),
-                ),
+                  );
+                },
               ),
-            ],
+            ),
           ),
-        ),
+        ],
+            ),
       ),
+    ),
+    ),
     );
   }
 
