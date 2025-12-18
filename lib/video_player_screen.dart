@@ -38,14 +38,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _loadAudioTracks();
     _controller = VideoPlayerController.file(widget.videoFile)
       ..initialize().then((_) {
         if (mounted) {
           setState(() => _isInitialized = true);
-          _controller.play();
-          WakelockPlus.enable();
-          _startHideTimer();
+
+          // Load and set audio tracks AFTER video is initialized
+          _loadAudioTracks().then((_) {
+            if (mounted) {
+              _controller.play();
+              WakelockPlus.enable();
+              _startHideTimer();
+            }
+          });
         }
       });
 
@@ -57,6 +62,21 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (_controller.value.isInitialized) {
       _lastPosition = _controller.value.position;
       _wasPlaying = _controller.value.isPlaying;
+    }
+  }
+
+  Future<void> _refreshAudioTrack() async {
+    // Force re-apply the selected audio track
+    if (_audioTracks.isNotEmpty) {
+      try {
+        await AudioTrackSelector.setAudioTrack(
+          _selectedTrackGroupIndex,
+          _selectedTrackIndex,
+        );
+        print('🔄 Refreshed audio track: group=$_selectedTrackGroupIndex, track=$_selectedTrackIndex');
+      } catch (e) {
+        print('Error refreshing audio track: $e');
+      }
     }
   }
 
@@ -79,24 +99,38 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   Future<void> _loadAudioTracks() async {
+    print('🎵 Loading audio tracks...');
     final tracks = await AudioTrackSelector.getAudioTracks(widget.videoFile.path);
+    print('📋 Found ${tracks.length} audio tracks');
+
     if (mounted) {
       setState(() => _audioTracks = tracks);
 
+      // Wait a bit for video player to be fully ready
+      await Future.delayed(const Duration(milliseconds: 300));
+
       // Automatically select first audio track (Track 1 = music+voice)
-      if (tracks.isNotEmpty) {
+      if (tracks.isNotEmpty && mounted) {
         final firstTrack = tracks[0];
-        AudioTrackSelector.setAudioTrack(
-          firstTrack['groupIndex'] as int,
-          firstTrack['trackIndex'] as int,
-        ).then((_) {
+        final groupIndex = firstTrack['groupIndex'] as int;
+        final trackIndex = firstTrack['trackIndex'] as int;
+
+        print('🎯 Attempting to select Track 1: group=$groupIndex, track=$trackIndex');
+
+        try {
+          await AudioTrackSelector.setAudioTrack(groupIndex, trackIndex);
+
           if (mounted) {
             setState(() {
-              _selectedTrackGroupIndex = firstTrack['groupIndex'] as int;
-              _selectedTrackIndex = firstTrack['trackIndex'] as int;
+              _selectedTrackGroupIndex = groupIndex;
+              _selectedTrackIndex = trackIndex;
             });
+            print('✅ Auto-selected Track 1 (Music + Voice)');
+            print('   Selected group: $_selectedTrackGroupIndex, track: $_selectedTrackIndex');
           }
-        });
+        } catch (e) {
+          print('❌ Error setting audio track: $e');
+        }
       }
     }
   }
@@ -107,6 +141,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         const SnackBar(content: Text('No audio tracks available')),
       );
       return;
+    }
+
+    print('🎵 Opening audio track dialog');
+    print('   Current selection: group=$_selectedTrackGroupIndex, track=$_selectedTrackIndex');
+    print('   Available tracks: ${_audioTracks.length}');
+
+    for (var i = 0; i < _audioTracks.length; i++) {
+      final track = _audioTracks[i];
+      print('   Track $i: group=${track['groupIndex']}, track=${track['trackIndex']}, label=${track['label']}');
     }
 
     showDialog(
@@ -158,21 +201,50 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     ),
                     onChanged: (value) async {
                       if (value != null) {
-                        await AudioTrackSelector.setAudioTrack(
-                          track['groupIndex'] as int,
-                          track['trackIndex'] as int,
-                        );
-                        setState(() {
-                          _selectedTrackGroupIndex = track['groupIndex'] as int;
-                          _selectedTrackIndex = track['trackIndex'] as int;
-                        });
-                        Navigator.pop(context);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text('Switched to $trackLabel'),
-                            duration: const Duration(seconds: 2),
-                          ),
-                        );
+                        final selectedTrack = _audioTracks[value];
+                        final groupIndex = selectedTrack['groupIndex'] as int;
+                        final trackIndex = selectedTrack['trackIndex'] as int;
+
+                        print('🎵 Switching to track $value: group=$groupIndex, track=$trackIndex');
+
+                        try {
+                          // Set the audio track
+                          await AudioTrackSelector.setAudioTrack(groupIndex, trackIndex);
+
+                          // Update state
+                          if (mounted) {
+                            setState(() {
+                              _selectedTrackGroupIndex = groupIndex;
+                              _selectedTrackIndex = trackIndex;
+                            });
+                          }
+
+                          // Close dialog
+                          if (mounted) {
+                            Navigator.pop(context);
+
+                            // Show confirmation
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Switched to $trackLabel'),
+                                duration: const Duration(seconds: 2),
+                              ),
+                            );
+                          }
+
+                          print('✅ Track switched successfully');
+                        } catch (e) {
+                          print('❌ Error switching track: $e');
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Error switching track: $e'),
+                                backgroundColor: Colors.red,
+                                duration: const Duration(seconds: 3),
+                              ),
+                            );
+                          }
+                        }
                       }
                     },
                   ),
@@ -232,6 +304,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           if (mounted && _wasPlaying) {
             _controller.play();
             WakelockPlus.enable();
+            // Refresh audio track after resuming
+            _refreshAudioTrack();
           }
         });
       }
