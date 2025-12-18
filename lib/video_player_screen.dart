@@ -473,22 +473,26 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     print('📱 Lifecycle state: $state');
 
-    // Only handle actual app state changes, not orientation/rebuild
-    if (state == AppLifecycleState.paused) {
-      // Save current state
-      _wasPlaying = _controller.value.isPlaying;
-      _lastPosition = _controller.value.position;
-
-      print('⏸️ App paused. Was playing: $_wasPlaying, Position: $_lastPosition');
+    if (state == AppLifecycleState.inactive) {
+      // FIRST save - capture true playing state before anything pauses
+      if (!_isPlayingInBackground) {
+        // Only update if not already in background audio mode
+        _wasPlaying = _controller.value.isPlaying;
+        _lastPosition = _controller.value.position;
+        print('💤 App inactive. Captured playing state: $_wasPlaying');
+      }
+    } else if (state == AppLifecycleState.paused) {
+      // Don't re-save _wasPlaying here - keep the value from inactive state
+      print('⏸️ App paused. Preserving was playing: $_wasPlaying, Position: $_lastPosition');
 
       // Only start background audio if actually going to background (not just rotating)
-      if (_wasPlaying && audioHandler != null) {
+      if (_wasPlaying && audioHandler != null && !_isPlayingInBackground) {
         _controller.pause();
         WakelockPlus.disable();
         // Delay to check if we're really going to background
         Future.delayed(const Duration(milliseconds: 500), () {
           if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused) {
-            print('🎵 Starting background audio');
+            print('🎵 Starting background audio (was playing: $_wasPlaying)');
             _startBackgroundAudio(_lastPosition ?? Duration.zero);
           } else {
             print('⚠️ Not really backgrounded, was just screen off');
@@ -505,25 +509,25 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         WakelockPlus.enable();
       } else if (_wasPlaying) {
         // Screen turned back on or returning from inactive state
-        print('▶️ Resuming video playback');
+        print('▶️ Resuming video playback (was playing: $_wasPlaying)');
 
         Future.delayed(const Duration(milliseconds: 100), () {
           if (mounted && _controller.value.isInitialized) {
-            if (!_controller.value.isPlaying && _wasPlaying) {
+            if (!_controller.value.isPlaying) {
+              print('▶️ Starting playback now');
               _controller.play();
               WakelockPlus.enable();
               // Refresh audio track after resuming
               _refreshAudioTrack();
               print('✅ Video resumed successfully');
+            } else {
+              print('ℹ️ Video already playing');
             }
           }
         });
+      } else {
+        print('ℹ️ Video was not playing, staying paused');
       }
-    } else if (state == AppLifecycleState.inactive) {
-      // Save state but don't stop video (might just be orientation change or screen turning off)
-      _wasPlaying = _controller.value.isPlaying;
-      _lastPosition = _controller.value.position;
-      print('💤 App inactive. Was playing: $_wasPlaying');
     }
   }
 
