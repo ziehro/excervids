@@ -18,7 +18,8 @@ class VideoPlayerScreen extends StatefulWidget {
   State<VideoPlayerScreen> createState() => _VideoPlayerScreenState();
 }
 
-class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindingObserver {
+class _VideoPlayerScreenState extends State<VideoPlayerScreen>
+    with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
   late VideoPlayerController _controller;
   bool _isInitialized = false;
   bool _isPlayingInBackground = false;
@@ -27,6 +28,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
   int _selectedTrackIndex = 0;
   bool _showControls = true;
   Timer? _hideTimer;
+  bool _wasPlaying = false;
+  Duration? _lastPosition;
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
@@ -42,6 +48,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
           _startHideTimer();
         }
       });
+
+    // Add listener to continuously track position
+    _controller.addListener(_videoListener);
+  }
+
+  void _videoListener() {
+    if (_controller.value.isInitialized) {
+      _lastPosition = _controller.value.position;
+      _wasPlaying = _controller.value.isPlaying;
+    }
   }
 
   void _startHideTimer() {
@@ -189,18 +205,40 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
 
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
-      if (_controller.value.isPlaying && audioHandler != null) {
-        final position = _controller.value.position;
+    // Only handle actual app state changes, not orientation/rebuild
+    if (state == AppLifecycleState.paused) {
+      // Save current state
+      _wasPlaying = _controller.value.isPlaying;
+      _lastPosition = _controller.value.position;
+
+      // Only start background audio if actually going to background (not just rotating)
+      if (_wasPlaying && audioHandler != null) {
         _controller.pause();
         WakelockPlus.disable();
-        _startBackgroundAudio(position);
+        // Delay to check if we're really going to background
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused) {
+            _startBackgroundAudio(_lastPosition ?? Duration.zero);
+          }
+        });
       }
     } else if (state == AppLifecycleState.resumed) {
       if (_isPlayingInBackground) {
         _resumeVideoFromAudio();
         WakelockPlus.enable();
+      } else if (_wasPlaying && _lastPosition != null) {
+        // Resume from saved position after orientation change
+        _controller.seekTo(_lastPosition!).then((_) {
+          if (mounted && _wasPlaying) {
+            _controller.play();
+            WakelockPlus.enable();
+          }
+        });
       }
+    } else if (state == AppLifecycleState.inactive) {
+      // Save state but don't stop video (might just be orientation change)
+      _wasPlaying = _controller.value.isPlaying;
+      _lastPosition = _controller.value.position;
     }
   }
 
@@ -219,14 +257,40 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
   Future<void> _resumeVideoFromAudio() async {
     if (audioHandler == null) return;
 
-    final audioPosition = audioHandler!.player.position;
-    await audioHandler!.stop();
+    try {
+      final audioPosition = audioHandler!.player.position;
+      await audioHandler!.stop();
 
-    if (mounted) {
-      setState(() => _isPlayingInBackground = false);
-      await _controller.seekTo(audioPosition);
-      await _controller.play();
+      if (mounted && _isInitialized) {
+        setState(() => _isPlayingInBackground = false);
+
+        // Seek to audio position and resume playback
+        await _controller.seekTo(audioPosition);
+
+        // Small delay to ensure seek completes
+        await Future.delayed(const Duration(milliseconds: 100));
+
+        if (mounted && _wasPlaying) {
+          await _controller.play();
+          WakelockPlus.enable();
+        }
+      }
+    } catch (e) {
+      print('Error resuming video from audio: $e');
+      if (mounted) {
+        setState(() => _isPlayingInBackground = false);
+      }
     }
+  }
+
+  @override
+  void deactivate() {
+    // Save state when widget is being deactivated (e.g., during orientation change)
+    if (_controller.value.isInitialized) {
+      _wasPlaying = _controller.value.isPlaying;
+      _lastPosition = _controller.value.position;
+    }
+    super.deactivate();
   }
 
   @override
@@ -234,6 +298,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
     _hideTimer?.cancel();
     WakelockPlus.disable();
     WidgetsBinding.instance.removeObserver(this);
+    _controller.removeListener(_videoListener);
     if (_isPlayingInBackground && audioHandler != null) {
       audioHandler!.stop();
     }
@@ -252,6 +317,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // Required for AutomaticKeepAliveClientMixin
+
     if (_isInitialized && _controller.value.isPlaying) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         WakelockPlus.enable();
