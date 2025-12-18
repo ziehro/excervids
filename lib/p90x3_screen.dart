@@ -27,6 +27,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
   String? selectedProgram;
   int currentDay = 1;
   Set<int> completedDays = {};
+  Set<int> completedAbRipper = {};
   Set<int> daysWithAbRipper = {};
   DateTime? programStartDate;
   bool alignRestToSunday = false;
@@ -55,6 +56,8 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       currentDay = prefs.getInt('p90x3_current_day') ?? 1;
       final completed = prefs.getStringList('p90x3_completed') ?? [];
       completedDays = completed.map((e) => int.parse(e)).toSet();
+      final completedAb = prefs.getStringList('p90x3_completed_ab') ?? [];
+      completedAbRipper = completedAb.map((e) => int.parse(e)).toSet();
       final abRipper = prefs.getStringList('p90x3_ab_ripper') ?? [];
       daysWithAbRipper = abRipper.map((e) => int.parse(e)).toSet();
       alignRestToSunday = prefs.getBool('p90x3_align_rest_sunday') ?? false;
@@ -72,6 +75,10 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     await prefs.setStringList(
       'p90x3_completed',
       completedDays.map((e) => e.toString()).toList(),
+    );
+    await prefs.setStringList(
+      'p90x3_completed_ab',
+      completedAbRipper.map((e) => e.toString()).toList(),
     );
     await prefs.setStringList(
       'p90x3_ab_ripper',
@@ -185,6 +192,19 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
   void _resetToday() {
     setState(() {
       completedDays.remove(currentDay);
+      completedAbRipper.remove(currentDay);
+    });
+    _saveProgress();
+  }
+
+  void _toggleAbRipperComplete(int day) {
+    setState(() {
+      if (completedAbRipper.contains(day)) {
+        completedAbRipper.remove(day);
+      } else {
+        completedAbRipper.add(day);
+        _animationController.forward(from: 0);
+      }
     });
     _saveProgress();
   }
@@ -383,6 +403,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
               ),
             ],
             const SizedBox(height: 16),
+            // Main workout status
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -396,16 +417,47 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                     color: isCompleted ? Colors.green : Colors.grey,
                   ),
                   const SizedBox(width: 8),
-                  Text(
-                    isCompleted ? 'Completed' : 'Pending',
-                    style: TextStyle(
-                      color: isCompleted ? Colors.green : Colors.grey,
-                      fontWeight: FontWeight.w600,
+                  Expanded(
+                    child: Text(
+                      'Main Workout: ${isCompleted ? "Completed" : "Pending"}',
+                      style: TextStyle(
+                        color: isCompleted ? Colors.green : Colors.grey,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 ],
               ),
             ),
+            // Ab Ripper status
+            if (hasAbRipper) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: (completedAbRipper.contains(day) ? Colors.orange : Colors.grey).withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      completedAbRipper.contains(day) ? Icons.check_circle : Icons.pending,
+                      color: completedAbRipper.contains(day) ? Colors.orange : Colors.grey,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Ab Ripper X: ${completedAbRipper.contains(day) ? "Completed" : "Pending"}',
+                        style: TextStyle(
+                          color: completedAbRipper.contains(day) ? Colors.orange : Colors.grey,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ],
         ),
         actions: [
@@ -446,15 +498,31 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
               ),
             ),
           ],
+          if (hasAbRipper)
+            ElevatedButton.icon(
+              onPressed: () {
+                _toggleAbRipperComplete(day);
+                Navigator.pop(context);
+              },
+              icon: Icon(completedAbRipper.contains(day) ? Icons.close : Icons.check),
+              label: Text(completedAbRipper.contains(day) ? 'Undo AB' : 'AB Done'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: completedAbRipper.contains(day) ? Colors.orange.shade300 : Colors.orange,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
           ElevatedButton.icon(
             onPressed: () {
               _markDayComplete(day);
               Navigator.pop(context);
             },
             icon: Icon(isCompleted ? Icons.close : Icons.check),
-            label: Text(isCompleted ? 'Undo' : 'Complete'),
+            label: Text(isCompleted ? 'Undo Main' : 'Main Done'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: isCompleted ? Colors.orange : Colors.green,
+              backgroundColor: isCompleted ? Colors.green.shade300 : Colors.green,
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12),
@@ -876,31 +944,88 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                               ),
                             ),
                           ),
-                          const SizedBox(width: 12),
-                          AnimatedBuilder(
-                            animation: _animationController,
-                            builder: (context, child) {
-                              return Transform.scale(
-                                scale: 1.0 + (_animationController.value * 0.2),
-                                child: Container(
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withOpacity(0.25),
-                                    borderRadius: BorderRadius.circular(16),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      // Separate completion buttons
+                      Row(
+                        children: [
+                          Expanded(
+                            child: AnimatedBuilder(
+                              animation: _animationController,
+                              builder: (context, child) {
+                                return OutlinedButton.icon(
+                                  onPressed: () => _markDayComplete(currentDay),
+                                  icon: Icon(
+                                    completedDays.contains(currentDay)
+                                        ? Icons.check_circle_rounded
+                                        : Icons.check_circle_outline_rounded,
                                   ),
-                                  child: IconButton(
-                                    icon: Icon(
-                                      completedDays.contains(currentDay)
-                                          ? Icons.check_circle_rounded
-                                          : Icons.check_circle_outline_rounded,
-                                      size: 36,
+                                  label: Text(
+                                    completedDays.contains(currentDay) ? 'DONE' : 'MARK DONE',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
                                     ),
-                                    color: Colors.white,
-                                    onPressed: () => _markDayComplete(currentDay),
-                                    padding: const EdgeInsets.all(12),
                                   ),
-                                ),
-                              );
-                            },
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: Colors.white,
+                                    side: BorderSide(
+                                      color: completedDays.contains(currentDay)
+                                          ? Colors.green
+                                          : Colors.white.withOpacity(0.5),
+                                      width: 2,
+                                    ),
+                                    backgroundColor: completedDays.contains(currentDay)
+                                        ? Colors.green.withOpacity(0.3)
+                                        : Colors.transparent,
+                                    padding: const EdgeInsets.symmetric(vertical: 12),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: AnimatedBuilder(
+                              animation: _animationController,
+                              builder: (context, child) {
+                                return OutlinedButton.icon(
+                                  onPressed: () => _toggleAbRipperComplete(currentDay),
+                                  icon: Icon(
+                                    completedAbRipper.contains(currentDay)
+                                        ? Icons.check_circle_rounded
+                                        : Icons.check_circle_outline_rounded,
+                                  ),
+                                  label: Text(
+                                    completedAbRipper.contains(currentDay) ? 'AB DONE' : 'AB MARK',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: Colors.white,
+                                    side: BorderSide(
+                                      color: completedAbRipper.contains(currentDay)
+                                          ? Colors.orange
+                                          : Colors.white.withOpacity(0.5),
+                                      width: 2,
+                                    ),
+                                    backgroundColor: completedAbRipper.contains(currentDay)
+                                        ? Colors.orange.withOpacity(0.3)
+                                        : Colors.transparent,
+                                    padding: const EdgeInsets.symmetric(vertical: 12),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
                           ),
                         ],
                       ),
@@ -1114,6 +1239,16 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                               ],
                             ),
                           ),
+                          // Ab Ripper completed stripe (brown belt across)
+                          if (completedAbRipper.contains(day))
+                            Positioned.fill(
+                              child: CustomPaint(
+                                painter: DiagonalStripePainter(
+                                  color: const Color(0xFF8B4513), // Brown
+                                  strokeWidth: 3,
+                                ),
+                              ),
+                            ),
                           // Completed checkmark
                           if (isCompleted)
                             Positioned(
@@ -1132,7 +1267,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                 ),
                               ),
                             ),
-                          // Ab Ripper indicator
+                          // Ab Ripper scheduled indicator (belt emoji at bottom)
                           if (daysWithAbRipper.contains(day))
                             Positioned(
                               bottom: 1,
@@ -1496,4 +1631,34 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       ),
     );
   }
+}
+
+// Custom painter for diagonal stripe (brown belt indicator)
+class DiagonalStripePainter extends CustomPainter {
+  final Color color;
+  final double strokeWidth;
+
+  DiagonalStripePainter({
+    required this.color,
+    this.strokeWidth = 3,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
+
+    // Draw diagonal stripe from top-left to bottom-right
+    canvas.drawLine(
+      Offset(0, size.height * 0.3),
+      Offset(size.width, size.height * 0.7),
+      paint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
