@@ -100,20 +100,10 @@ class P90X3Schedule {
     'Mass': [1, 3, 5, 8, 10, 12, 15, 17, 19, 22, 24, 26, 29, 31, 33, 36, 38, 40, 43, 45, 47, 50, 52, 54, 57, 59, 61, 64, 66, 68, 71, 73, 75, 78, 80, 82, 85, 87, 89],
   };
 
-  static String getWorkoutForDay(String program, int dayNumber, {bool includeAbRipper = false}) {
+  static String getWorkoutForDay(String program, int dayNumber) {
     final schedule = schedules[program];
     if (schedule == null || dayNumber < 1 || dayNumber > 90) return 'Rest';
-
-    String workout = schedule[dayNumber - 1];
-
-    // Add Ab Ripper X if enabled for this day
-    if (includeAbRipper && abRipperDays[program]?.contains(dayNumber) == true) {
-      if (!workout.contains('Rest')) {
-        workout += ' + Ab Ripper X';
-      }
-    }
-
-    return workout;
+    return schedule[dayNumber - 1];
   }
 
   static bool canHaveAbRipper(String program, int dayNumber) {

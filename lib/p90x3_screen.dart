@@ -93,12 +93,12 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
             style: TextStyle(fontWeight: FontWeight.bold)),
         content: const Text(
           'Do you want rest days to fall on Sundays?\n\n'
-              'This will adjust your start date so that your rest days align with weekends.',
+              'This will adjust your program so rest days align with weekends and skip you to the current day of the week.',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('No, start today'),
+            child: const Text('No, start at Day 1'),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -117,12 +117,15 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
 
     setState(() {
       selectedProgram = program;
-      currentDay = 1;
       completedDays.clear();
-      daysWithAbRipper.clear();
       alignRestToSunday = alignToSunday;
 
-      // Calculate start date based on alignment preference
+      // Auto-enable Ab Ripper for all eligible days
+      daysWithAbRipper.clear();
+      final eligibleDays = P90X3Schedule.abRipperDays[program] ?? [];
+      daysWithAbRipper.addAll(eligibleDays);
+
+      // Calculate start date and current day based on alignment preference
       final today = DateTime.now();
       if (alignToSunday) {
         // Find which day of the week day 7 (first rest day) should be
@@ -131,9 +134,16 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
         final currentWeekday = today.weekday; // 1=Monday, 7=Sunday
         final desiredWeekday = 1; // Monday
         final daysToAdjust = (desiredWeekday - currentWeekday) % 7;
+
+        // Start date is adjusted so Day 1 = Monday
         programStartDate = today.add(Duration(days: daysToAdjust));
+
+        // Current day matches today's position in the week
+        // If today is Monday = Day 1, Tuesday = Day 2, ..., Sunday = Day 7
+        currentDay = currentWeekday;
       } else {
         programStartDate = today;
+        currentDay = 1;
       }
     });
     _saveProgress();
@@ -175,20 +185,6 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
   void _resetToday() {
     setState(() {
       completedDays.remove(currentDay);
-      daysWithAbRipper.remove(currentDay);
-    });
-    _saveProgress();
-  }
-
-  void _toggleAbRipper(int day) {
-    if (!P90X3Schedule.canHaveAbRipper(selectedProgram!, day)) return;
-
-    setState(() {
-      if (daysWithAbRipper.contains(day)) {
-        daysWithAbRipper.remove(day);
-      } else {
-        daysWithAbRipper.add(day);
-      }
     });
     _saveProgress();
   }
@@ -323,131 +319,111 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
 
     showDialog(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-          title: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: _getWorkoutColor(workout).withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(
-                  _getWorkoutIcon(workout),
-                  color: _getWorkoutColor(workout),
-                ),
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: _getWorkoutColor(workout).withOpacity(0.2),
+                borderRadius: BorderRadius.circular(12),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Day $day'),
-                    if (programStartDate != null)
-                      Text(
-                        _getDayOfWeek(day),
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.grey[600],
-                          fontWeight: FontWeight.normal,
-                        ),
-                      ),
-                  ],
-                ),
+              child: Icon(
+                _getWorkoutIcon(workout),
+                color: _getWorkoutColor(workout),
               ),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                workout,
-                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: (isCompleted ? Colors.green : Colors.grey).withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      isCompleted ? Icons.check_circle : Icons.pending,
-                      color: isCompleted ? Colors.green : Colors.grey,
-                    ),
-                    const SizedBox(width: 8),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Day $day'),
+                  if (programStartDate != null)
                     Text(
-                      isCompleted ? 'Completed' : 'Pending',
+                      _getDayOfWeek(day),
                       style: TextStyle(
-                        color: isCompleted ? Colors.green : Colors.grey,
-                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
+                        color: Colors.grey[600],
+                        fontWeight: FontWeight.normal,
                       ),
                     ),
-                  ],
-                ),
+                ],
               ),
-              if (canHaveAbRipper) ...[
-                const SizedBox(height: 16),
-                InkWell(
-                  onTap: () {
-                    _toggleAbRipper(day);
-                    setState(() {});
-                  },
-                  borderRadius: BorderRadius.circular(12),
-                  child: Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.orange.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: hasAbRipper ? Colors.orange : Colors.grey[300]!,
-                        width: 2,
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          hasAbRipper
-                              ? Icons.check_box_rounded
-                              : Icons.check_box_outline_blank_rounded,
-                          color: hasAbRipper ? Colors.orange : Colors.grey,
-                        ),
-                        const SizedBox(width: 8),
-                        const Expanded(
-                          child: Text(
-                            'Add Ab Ripper X',
-                            style: TextStyle(
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ],
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              workout,
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            if (hasAbRipper) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Text(
+                    '🥋',
+                    style: TextStyle(fontSize: 20),
+                  ),
+                  const SizedBox(width: 8),
+                  const Text(
+                    'Ab Ripper X',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.orange,
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Close'),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: (isCompleted ? Colors.green : Colors.grey).withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    isCompleted ? Icons.check_circle : Icons.pending,
+                    color: isCompleted ? Colors.green : Colors.grey,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    isCompleted ? 'Completed' : 'Pending',
+                    style: TextStyle(
+                      color: isCompleted ? Colors.green : Colors.grey,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
             ),
-            if (!isRest)
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+          if (!isRest) ...[
+            if (hasAbRipper)
               ElevatedButton.icon(
                 onPressed: () {
                   Navigator.pop(context);
-                  _playVideo(workout, day);
+                  _playVideo('Ab Ripper X', day);
                 },
-                icon: const Icon(Icons.play_arrow),
-                label: const Text('Play'),
+                icon: const Text('🥋', style: TextStyle(fontSize: 16)),
+                label: const Text('Ab Ripper'),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: _getWorkoutColor(workout),
+                  backgroundColor: Colors.orange,
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
@@ -456,13 +432,13 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
               ),
             ElevatedButton.icon(
               onPressed: () {
-                _markDayComplete(day);
                 Navigator.pop(context);
+                _playVideo(workout, day);
               },
-              icon: Icon(isCompleted ? Icons.close : Icons.check),
-              label: Text(isCompleted ? 'Undo' : 'Complete'),
+              icon: const Icon(Icons.play_arrow),
+              label: const Text('Main'),
               style: ElevatedButton.styleFrom(
-                backgroundColor: isCompleted ? Colors.orange : Colors.green,
+                backgroundColor: _getWorkoutColor(workout),
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
@@ -470,7 +446,22 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
               ),
             ),
           ],
-        ),
+          ElevatedButton.icon(
+            onPressed: () {
+              _markDayComplete(day);
+              Navigator.pop(context);
+            },
+            icon: Icon(isCompleted ? Icons.close : Icons.check),
+            label: Text(isCompleted ? 'Undo' : 'Complete'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: isCompleted ? Colors.orange : Colors.green,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -481,11 +472,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       return _buildProgramSelection();
     }
 
-    final todayWorkout = P90X3Schedule.getWorkoutForDay(
-      selectedProgram!,
-      currentDay,
-      includeAbRipper: daysWithAbRipper.contains(currentDay),
-    );
+    final todayWorkout = P90X3Schedule.getWorkoutForDay(selectedProgram!, currentDay);
     final completedCount = completedDays.length;
     final progressPercent = completedCount / 90;
     final canHaveAbRipper = P90X3Schedule.canHaveAbRipper(selectedProgram!, currentDay);
@@ -732,15 +719,29 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                       ],
                     ),
                     const SizedBox(height: 20),
-                    Text(
-                      todayWorkout,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 32,
-                        fontWeight: FontWeight.bold,
-                        height: 1.1,
-                        letterSpacing: 0.5,
-                      ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            todayWorkout,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 32,
+                              fontWeight: FontWeight.bold,
+                              height: 1.1,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ),
+                        if (hasAbRipper)
+                          const Padding(
+                            padding: EdgeInsets.only(left: 8),
+                            child: Text(
+                              '🥋',
+                              style: TextStyle(fontSize: 32),
+                            ),
+                          ),
+                      ],
                     ),
 
                     // Day navigation and Ab Ripper toggle
@@ -784,48 +785,6 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
 
                         const Spacer(),
 
-                        // Ab Ripper toggle
-                        if (canHaveAbRipper)
-                          GestureDetector(
-                            onTap: () => _toggleAbRipper(currentDay),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: hasAbRipper
-                                    ? Colors.white.withOpacity(0.3)
-                                    : Colors.white.withOpacity(0.1),
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                  color: Colors.white.withOpacity(0.5),
-                                  width: 1.5,
-                                ),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    hasAbRipper
-                                        ? Icons.check_box_rounded
-                                        : Icons.check_box_outline_blank_rounded,
-                                    color: Colors.white,
-                                    size: 16,
-                                  ),
-                                  const SizedBox(width: 4),
-                                  const Text(
-                                    'AB',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-
-                        const SizedBox(width: 6),
-
                         // Reset today button
                         Container(
                           decoration: BoxDecoration(
@@ -862,63 +821,149 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                     ),
 
                     const SizedBox(height: 24),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: ElevatedButton.icon(
-                            onPressed: todayWorkout.contains('Rest')
-                                ? null
-                                : () => _playVideo(todayWorkout, currentDay),
-                            icon: const Icon(Icons.play_arrow_rounded, size: 28),
-                            label: const Text(
-                              'PLAY WORKOUT',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 1,
+                    if (hasAbRipper) ...[
+                      // Two buttons for Ab Ripper days
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              onPressed: todayWorkout.contains('Rest')
+                                  ? null
+                                  : () => _playVideo(todayWorkout, currentDay),
+                              icon: const Icon(Icons.play_arrow_rounded, size: 24),
+                              label: const Text(
+                                'MAIN',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1,
+                                ),
                               ),
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.white,
-                              foregroundColor: _getWorkoutColor(todayWorkout),
-                              disabledBackgroundColor: Colors.white.withOpacity(0.3),
-                              disabledForegroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(vertical: 18),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              elevation: 0,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        AnimatedBuilder(
-                          animation: _animationController,
-                          builder: (context, child) {
-                            return Transform.scale(
-                              scale: 1.0 + (_animationController.value * 0.2),
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.25),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.white,
+                                foregroundColor: _getWorkoutColor(todayWorkout),
+                                disabledBackgroundColor: Colors.white.withOpacity(0.3),
+                                disabledForegroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(vertical: 16),
+                                shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(16),
                                 ),
-                                child: IconButton(
-                                  icon: Icon(
-                                    completedDays.contains(currentDay)
-                                        ? Icons.check_circle_rounded
-                                        : Icons.check_circle_outline_rounded,
-                                    size: 36,
-                                  ),
-                                  color: Colors.white,
-                                  onPressed: () => _markDayComplete(currentDay),
-                                  padding: const EdgeInsets.all(12),
+                                elevation: 0,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              onPressed: () => _playVideo('Ab Ripper X', currentDay),
+                              icon: const Text('🥋', style: TextStyle(fontSize: 20)),
+                              label: const Text(
+                                'AB RIPPER',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1,
                                 ),
                               ),
-                            );
-                          },
-                        ),
-                      ],
-                    ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.white,
+                                foregroundColor: Colors.orange,
+                                padding: const EdgeInsets.symmetric(vertical: 16),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                                elevation: 0,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          AnimatedBuilder(
+                            animation: _animationController,
+                            builder: (context, child) {
+                              return Transform.scale(
+                                scale: 1.0 + (_animationController.value * 0.2),
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.25),
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                  child: IconButton(
+                                    icon: Icon(
+                                      completedDays.contains(currentDay)
+                                          ? Icons.check_circle_rounded
+                                          : Icons.check_circle_outline_rounded,
+                                      size: 36,
+                                    ),
+                                    color: Colors.white,
+                                    onPressed: () => _markDayComplete(currentDay),
+                                    padding: const EdgeInsets.all(12),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ] else ...[
+                      // Single button for non-Ab Ripper days
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              onPressed: todayWorkout.contains('Rest')
+                                  ? null
+                                  : () => _playVideo(todayWorkout, currentDay),
+                              icon: const Icon(Icons.play_arrow_rounded, size: 28),
+                              label: const Text(
+                                'PLAY WORKOUT',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1,
+                                ),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.white,
+                                foregroundColor: _getWorkoutColor(todayWorkout),
+                                disabledBackgroundColor: Colors.white.withOpacity(0.3),
+                                disabledForegroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(vertical: 18),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                                elevation: 0,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          AnimatedBuilder(
+                            animation: _animationController,
+                            builder: (context, child) {
+                              return Transform.scale(
+                                scale: 1.0 + (_animationController.value * 0.2),
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.25),
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                  child: IconButton(
+                                    icon: Icon(
+                                      completedDays.contains(currentDay)
+                                          ? Icons.check_circle_rounded
+                                          : Icons.check_circle_outline_rounded,
+                                      size: 36,
+                                    ),
+                                    color: Colors.white,
+                                    onPressed: () => _markDayComplete(currentDay),
+                                    padding: const EdgeInsets.all(12),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -1094,24 +1139,17 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                               left: 0,
                               right: 0,
                               child: Center(
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
-                                  decoration: BoxDecoration(
-                                    color: (isCompleted || isToday
-                                        ? Colors.white
-                                        : Colors.orange).withOpacity(0.9),
-                                    borderRadius: BorderRadius.circular(3),
-                                  ),
-                                  child: Text(
-                                    'AB',
-                                    style: TextStyle(
-                                      color: isCompleted || isToday
-                                          ? (isCompleted ? Colors.green : Colors.blue)
-                                          : Colors.white,
-                                      fontSize: 7,
-                                      fontWeight: FontWeight.bold,
-                                      height: 1.0,
-                                    ),
+                                child: Text(
+                                  '🥋',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    shadows: [
+                                      Shadow(
+                                        color: Colors.black.withOpacity(0.3),
+                                        offset: const Offset(0, 1),
+                                        blurRadius: 2,
+                                      ),
+                                    ],
                                   ),
                                 ),
                               ),

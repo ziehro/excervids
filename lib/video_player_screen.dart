@@ -66,6 +66,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
     final tracks = await AudioTrackSelector.getAudioTracks(widget.videoFile.path);
     if (mounted) {
       setState(() => _audioTracks = tracks);
+
+      // Automatically select first audio track (Track 1 = music+voice)
+      if (tracks.isNotEmpty) {
+        final firstTrack = tracks[0];
+        AudioTrackSelector.setAudioTrack(
+          firstTrack['groupIndex'] as int,
+          firstTrack['trackIndex'] as int,
+        ).then((_) {
+          if (mounted) {
+            setState(() {
+              _selectedTrackGroupIndex = firstTrack['groupIndex'] as int;
+              _selectedTrackIndex = firstTrack['trackIndex'] as int;
+            });
+          }
+        });
+      }
     }
   }
 
@@ -80,43 +96,91 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Select Audio Track'),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.audiotrack, color: Colors.blue),
+            SizedBox(width: 8),
+            Text('Select Audio Track'),
+          ],
+        ),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: _audioTracks.asMap().entries.map((entry) {
               final track = entry.value;
+              final trackNumber = entry.key + 1;
               final isSelected = _selectedTrackGroupIndex == track['groupIndex'] &&
                   _selectedTrackIndex == track['trackIndex'];
-              return ListTile(
-                leading: Radio<int>(
-                  value: entry.key,
-                  groupValue: _audioTracks.indexWhere((t) =>
-                  t['groupIndex'] == _selectedTrackGroupIndex &&
-                      t['trackIndex'] == _selectedTrackIndex
+
+              // Better labels for P90X3 videos
+              String trackLabel;
+              if (trackNumber == 1) {
+                trackLabel = 'Track 1 - Music + Voice';
+              } else if (trackNumber == 2) {
+                trackLabel = 'Track 2 - Music Only';
+              } else {
+                trackLabel = track['label'] ?? 'Track $trackNumber';
+              }
+
+              return Container(
+                margin: const EdgeInsets.symmetric(vertical: 4),
+                decoration: BoxDecoration(
+                  color: isSelected ? Colors.blue.withOpacity(0.1) : null,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: isSelected ? Colors.blue : Colors.grey.shade300,
+                    width: isSelected ? 2 : 1,
                   ),
-                  onChanged: (value) async {
-                    if (value != null) {
-                      await AudioTrackSelector.setAudioTrack(
-                        track['groupIndex'] as int,
-                        track['trackIndex'] as int,
-                      );
-                      setState(() {
-                        _selectedTrackGroupIndex = track['groupIndex'] as int;
-                        _selectedTrackIndex = track['trackIndex'] as int;
-                      });
-                      Navigator.pop(context);
-                    }
-                  },
                 ),
-                title: Text(track['label'] ?? 'Track ${entry.key + 1}'),
-                subtitle: Text(
-                    'Lang: ${track['language']} | ${track['codec']} | ${track['channelCount']} ch'
+                child: ListTile(
+                  leading: Radio<int>(
+                    value: entry.key,
+                    groupValue: _audioTracks.indexWhere((t) =>
+                    t['groupIndex'] == _selectedTrackGroupIndex &&
+                        t['trackIndex'] == _selectedTrackIndex
+                    ),
+                    onChanged: (value) async {
+                      if (value != null) {
+                        await AudioTrackSelector.setAudioTrack(
+                          track['groupIndex'] as int,
+                          track['trackIndex'] as int,
+                        );
+                        setState(() {
+                          _selectedTrackGroupIndex = track['groupIndex'] as int;
+                          _selectedTrackIndex = track['trackIndex'] as int;
+                        });
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Switched to $trackLabel'),
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                  title: Text(
+                    trackLabel,
+                    style: TextStyle(
+                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                    ),
+                  ),
+                  subtitle: Text(
+                    'Language: ${track['language']} | ${track['codec']} | ${track['channelCount']} channels',
+                    style: TextStyle(fontSize: 12),
+                  ),
                 ),
               );
             }).toList(),
           ),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
       ),
     );
   }
@@ -261,6 +325,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> with WidgetsBindi
                                 });
                               },
                             ),
+                            if (_audioTracks.length > 1)
+                              IconButton(
+                                icon: const Icon(Icons.audiotrack, size: 32),
+                                onPressed: _showAudioTrackDialog,
+                                tooltip: 'Audio Tracks',
+                                color: Colors.white,
+                              ),
                           ],
                         ),
                         if (_isPlayingInBackground)
