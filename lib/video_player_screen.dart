@@ -38,30 +38,171 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _controller = VideoPlayerController.file(widget.videoFile)
-      ..initialize().then((_) {
-        if (mounted) {
-          setState(() => _isInitialized = true);
+    _initializeVideo();
 
-          // Load and set audio tracks AFTER video is initialized
-          _loadAudioTracks().then((_) {
-            if (mounted) {
-              _controller.play();
-              WakelockPlus.enable();
-              _startHideTimer();
-            }
-          });
-        }
-      });
+    // Add listener to continuously track position and errors
+    // Note: listener added in _initializeVideo after controller is created
+  }
 
-    // Add listener to continuously track position
+  Future<void> _initializeVideo() async {
+    _controller = VideoPlayerController.file(widget.videoFile);
     _controller.addListener(_videoListener);
+
+    try {
+      await _controller.initialize();
+
+      if (!mounted) return;
+
+      setState(() => _isInitialized = true);
+
+      // Load and set audio tracks AFTER video is initialized
+      try {
+        await _loadAudioTracks();
+      } catch (audioError) {
+        print('⚠️ Audio track loading failed: $audioError');
+        print('▶️ Playing video with default audio');
+      }
+
+      if (mounted) {
+        await _controller.play();
+        WakelockPlus.enable();
+        _startHideTimer();
+      }
+    } catch (error) {
+      print('❌ Error initializing video: $error');
+
+      // Check if it's an audio-related error
+      final errorString = error.toString().toLowerCase();
+      if (errorString.contains('audio') || errorString.contains('mediacodec')) {
+        print('🔧 Audio error detected, trying video-only mode...');
+        await _tryVideoOnlyMode();
+      } else {
+        // Show error to user
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Error loading video: ${error.toString().split(':').last}'),
+              backgroundColor: Colors.red,
+              duration: const Duration(seconds: 5),
+              action: SnackBarAction(
+                label: 'Dismiss',
+                textColor: Colors.white,
+                onPressed: () {},
+              ),
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _tryVideoOnlyMode() async {
+    print('🎬 Attempting video-only initialization...');
+
+    try {
+      // Dispose the failed controller
+      _controller.removeListener(_videoListener);
+      await _controller.dispose();
+
+      // Create new controller
+      _controller = VideoPlayerController.file(widget.videoFile);
+      _controller.addListener(_videoListener);
+
+      // Try to initialize again
+      await _controller.initialize();
+
+      if (mounted) {
+        setState(() => _isInitialized = true);
+
+        // Show warning about audio
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('⚠️ Video playing with limited audio. Audio track may have issues.'),
+            backgroundColor: Colors.orange,
+            duration: const Duration(seconds: 4),
+            action: SnackBarAction(
+              label: 'OK',
+              textColor: Colors.white,
+              onPressed: () {},
+            ),
+          ),
+        );
+
+        await _controller.play();
+        WakelockPlus.enable();
+        _startHideTimer();
+      }
+    } catch (retryError) {
+      print('❌ Video-only mode also failed: $retryError');
+
+      if (mounted) {
+        // Show detailed error with file info
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.error_outline, color: Colors.red),
+                SizedBox(width: 8),
+                Text('Cannot Play Video'),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'This video has audio encoding issues and cannot be played.',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 12),
+                const Text('The problem:'),
+                Text(
+                  '• MP3 audio codec not compatible with video player',
+                  style: TextStyle(fontSize: 13, color: Colors.grey[700]),
+                ),
+                const SizedBox(height: 12),
+                const Text('Solution:'),
+                Text(
+                  '1. Re-encode video with AAC audio\n2. Use: ffmpeg -i input.mp4 -c:v copy -c:a aac output.mp4',
+                  style: TextStyle(fontSize: 12, fontFamily: 'monospace', color: Colors.grey[700]),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'File: ${widget.videoFile.path.split('/').last}',
+                  style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(context); // Close dialog
+                  Navigator.pop(context); // Close video screen
+                },
+                child: const Text('Close'),
+              ),
+            ],
+          ),
+        );
+      }
+    }
   }
 
   void _videoListener() {
     if (_controller.value.isInitialized) {
       _lastPosition = _controller.value.position;
       _wasPlaying = _controller.value.isPlaying;
+
+      // Handle video errors
+      if (_controller.value.hasError) {
+        print('❌ Video player error: ${_controller.value.errorDescription}');
+        if (mounted && _controller.value.errorDescription != null) {
+          // Try to recover by seeking slightly forward
+          final currentPos = _controller.value.position;
+          _controller.seekTo(currentPos + const Duration(milliseconds: 100));
+        }
+      }
     }
   }
 
@@ -75,7 +216,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         );
         print('🔄 Refreshed audio track: group=$_selectedTrackGroupIndex, track=$_selectedTrackIndex');
       } catch (e) {
-        print('Error refreshing audio track: $e');
+        print('⚠️ Could not refresh audio track: $e');
+        print('   Continuing with current audio...');
+        // Don't throw error - just continue with whatever track is playing
       }
     }
   }
@@ -99,39 +242,74 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   Future<void> _loadAudioTracks() async {
-    print('🎵 Loading audio tracks...');
-    final tracks = await AudioTrackSelector.getAudioTracks(widget.videoFile.path);
-    print('📋 Found ${tracks.length} audio tracks');
+    try {
+      print('🎵 Loading audio tracks...');
+      final tracks = await AudioTrackSelector.getAudioTracks(widget.videoFile.path);
+      print('📋 Found ${tracks.length} audio tracks');
 
-    if (mounted) {
+      if (!mounted) return;
+
       setState(() => _audioTracks = tracks);
 
-      // Wait a bit for video player to be fully ready
-      await Future.delayed(const Duration(milliseconds: 300));
+      if (tracks.isEmpty) {
+        print('⚠️ No audio tracks found, playing with default audio');
+        return;
+      }
 
-      // Automatically select first audio track (Track 1 = music+voice)
-      if (tracks.isNotEmpty && mounted) {
-        final firstTrack = tracks[0];
-        final groupIndex = firstTrack['groupIndex'] as int;
-        final trackIndex = firstTrack['trackIndex'] as int;
+      // Wait for video player to be fully ready
+      await Future.delayed(const Duration(milliseconds: 500));
 
-        print('🎯 Attempting to select Track 1: group=$groupIndex, track=$trackIndex');
+      if (!mounted) return;
 
-        try {
-          await AudioTrackSelector.setAudioTrack(groupIndex, trackIndex);
+      // Try to select first audio track (Track 1 = music+voice)
+      final firstTrack = tracks[0];
+      final groupIndex = firstTrack['groupIndex'] as int;
+      final trackIndex = firstTrack['trackIndex'] as int;
 
-          if (mounted) {
-            setState(() {
-              _selectedTrackGroupIndex = groupIndex;
-              _selectedTrackIndex = trackIndex;
-            });
-            print('✅ Auto-selected Track 1 (Music + Voice)');
-            print('   Selected group: $_selectedTrackGroupIndex, track: $_selectedTrackIndex');
+      print('🎯 Attempting to select Track 1: group=$groupIndex, track=$trackIndex');
+
+      try {
+        await AudioTrackSelector.setAudioTrack(groupIndex, trackIndex);
+
+        if (mounted) {
+          setState(() {
+            _selectedTrackGroupIndex = groupIndex;
+            _selectedTrackIndex = trackIndex;
+          });
+          print('✅ Auto-selected Track 1 (Music + Voice)');
+          print('   Selected group: $_selectedTrackGroupIndex, track: $_selectedTrackIndex');
+        }
+      } catch (e) {
+        print('❌ Error setting Track 1: $e');
+
+        // Fallback: Try Track 2 if Track 1 fails
+        if (tracks.length > 1 && mounted) {
+          print('🔄 Trying fallback to Track 2...');
+          try {
+            final secondTrack = tracks[1];
+            final fallbackGroupIndex = secondTrack['groupIndex'] as int;
+            final fallbackTrackIndex = secondTrack['trackIndex'] as int;
+
+            await AudioTrackSelector.setAudioTrack(fallbackGroupIndex, fallbackTrackIndex);
+
+            if (mounted) {
+              setState(() {
+                _selectedTrackGroupIndex = fallbackGroupIndex;
+                _selectedTrackIndex = fallbackTrackIndex;
+              });
+              print('✅ Fallback to Track 2 successful');
+            }
+          } catch (fallbackError) {
+            print('❌ Track 2 also failed: $fallbackError');
+            print('⚠️ Playing with default audio track');
           }
-        } catch (e) {
-          print('❌ Error setting audio track: $e');
+        } else {
+          print('⚠️ Only one track available or widget unmounted, playing with default');
         }
       }
+    } catch (e) {
+      print('❌ Fatal error loading audio tracks: $e');
+      print('⚠️ Continuing with default audio');
     }
   }
 
@@ -208,6 +386,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         print('🎵 Switching to track $value: group=$groupIndex, track=$trackIndex');
 
                         try {
+                          // Save current position in case we need to recover
+                          final currentPosition = _controller.value.position;
+                          final wasPlayingBefore = _controller.value.isPlaying;
+
                           // Set the audio track
                           await AudioTrackSelector.setAudioTrack(groupIndex, trackIndex);
 
@@ -217,6 +399,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                               _selectedTrackGroupIndex = groupIndex;
                               _selectedTrackIndex = trackIndex;
                             });
+                          }
+
+                          // If video stopped playing during switch, resume it
+                          if (wasPlayingBefore && !_controller.value.isPlaying && mounted) {
+                            await _controller.seekTo(currentPosition);
+                            await _controller.play();
                           }
 
                           // Close dialog
@@ -236,11 +424,17 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         } catch (e) {
                           print('❌ Error switching track: $e');
                           if (mounted) {
+                            Navigator.pop(context);
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
-                                content: Text('Error switching track: $e'),
-                                backgroundColor: Colors.red,
+                                content: Text('Could not switch track. Using current audio.'),
+                                backgroundColor: Colors.orange,
                                 duration: const Duration(seconds: 3),
+                                action: SnackBarAction(
+                                  label: 'OK',
+                                  textColor: Colors.white,
+                                  onPressed: () {},
+                                ),
                               ),
                             );
                           }
@@ -277,11 +471,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
 
+    print('📱 Lifecycle state: $state');
+
     // Only handle actual app state changes, not orientation/rebuild
     if (state == AppLifecycleState.paused) {
       // Save current state
       _wasPlaying = _controller.value.isPlaying;
       _lastPosition = _controller.value.position;
+
+      print('⏸️ App paused. Was playing: $_wasPlaying, Position: $_lastPosition');
 
       // Only start background audio if actually going to background (not just rotating)
       if (_wasPlaying && audioHandler != null) {
@@ -290,29 +488,42 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         // Delay to check if we're really going to background
         Future.delayed(const Duration(milliseconds: 500), () {
           if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused) {
+            print('🎵 Starting background audio');
             _startBackgroundAudio(_lastPosition ?? Duration.zero);
+          } else {
+            print('⚠️ Not really backgrounded, was just screen off');
           }
         });
       }
     } else if (state == AppLifecycleState.resumed) {
+      print('▶️ App resumed. Background audio: $_isPlayingInBackground, Was playing: $_wasPlaying');
+
       if (_isPlayingInBackground) {
+        // Coming back from actual background
+        print('🔄 Resuming from background audio');
         _resumeVideoFromAudio();
         WakelockPlus.enable();
-      } else if (_wasPlaying && _lastPosition != null) {
-        // Resume from saved position after orientation change
-        _controller.seekTo(_lastPosition!).then((_) {
-          if (mounted && _wasPlaying) {
-            _controller.play();
-            WakelockPlus.enable();
-            // Refresh audio track after resuming
-            _refreshAudioTrack();
+      } else if (_wasPlaying) {
+        // Screen turned back on or returning from inactive state
+        print('▶️ Resuming video playback');
+
+        Future.delayed(const Duration(milliseconds: 100), () {
+          if (mounted && _controller.value.isInitialized) {
+            if (!_controller.value.isPlaying && _wasPlaying) {
+              _controller.play();
+              WakelockPlus.enable();
+              // Refresh audio track after resuming
+              _refreshAudioTrack();
+              print('✅ Video resumed successfully');
+            }
           }
         });
       }
     } else if (state == AppLifecycleState.inactive) {
-      // Save state but don't stop video (might just be orientation change)
+      // Save state but don't stop video (might just be orientation change or screen turning off)
       _wasPlaying = _controller.value.isPlaying;
       _lastPosition = _controller.value.position;
+      print('💤 App inactive. Was playing: $_wasPlaying');
     }
   }
 
@@ -436,6 +647,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
+                            // Skip backward 1 minute
+                            IconButton(
+                              icon: const Icon(Icons.replay_10, size: 36),
+                              onPressed: () {
+                                final current = _controller.value.position;
+                                final target = current - const Duration(minutes: 1);
+                                _controller.seekTo(
+                                  target < Duration.zero ? Duration.zero : target,
+                                );
+                                if (_showControls) _startHideTimer();
+                              },
+                              tooltip: 'Back 1 minute',
+                              color: Colors.white,
+                            ),
+                            const SizedBox(width: 8),
+                            // Play/Pause
                             IconButton(
                               icon: Icon(
                                 _controller.value.isPlaying ? Icons.pause : Icons.play_arrow,
@@ -455,6 +682,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 });
                               },
                             ),
+                            const SizedBox(width: 8),
+                            // Skip forward 1 minute
+                            IconButton(
+                              icon: const Icon(Icons.forward_10, size: 36),
+                              onPressed: () {
+                                final current = _controller.value.position;
+                                final duration = _controller.value.duration;
+                                final target = current + const Duration(minutes: 1);
+                                _controller.seekTo(
+                                  target > duration ? duration : target,
+                                );
+                                if (_showControls) _startHideTimer();
+                              },
+                              tooltip: 'Forward 1 minute',
+                              color: Colors.white,
+                            ),
+                            const SizedBox(width: 16),
+                            // Volume
                             IconButton(
                               icon: Icon(
                                 _controller.value.volume > 0 ? Icons.volume_up : Icons.volume_off,
@@ -466,6 +711,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 });
                               },
                             ),
+                            // Audio track selector
                             if (_audioTracks.length > 1)
                               IconButton(
                                 icon: const Icon(Icons.audiotrack, size: 32),
