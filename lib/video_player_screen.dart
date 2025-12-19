@@ -192,7 +192,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   void _videoListener() {
     if (_controller.value.isInitialized) {
       _lastPosition = _controller.value.position;
-      _wasPlaying = _controller.value.isPlaying;
+      //_wasPlaying = _controller.value.isPlaying;
 
       // Handle video errors
       if (_controller.value.hasError) {
@@ -553,13 +553,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (mounted && _isInitialized) {
         setState(() => _isPlayingInBackground = false);
 
-        // Seek to audio position and resume playback
         await _controller.seekTo(audioPosition);
-
-        // Small delay to ensure seek completes
         await Future.delayed(const Duration(milliseconds: 100));
 
-        if (mounted && _wasPlaying) {
+        if (mounted && _wasPlaying) {  // ← THIS IS THE PROBLEM
           await _controller.play();
           WakelockPlus.enable();
         }
