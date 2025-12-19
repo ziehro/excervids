@@ -257,7 +257,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       }
 
       // Wait for video player to be fully ready
-      await Future.delayed(const Duration(milliseconds: 500));
+      await Future.delayed(const Duration(milliseconds: 200));
 
       if (!mounted) return;
 
@@ -490,7 +490,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _controller.pause();
         WakelockPlus.disable();
         // Delay to check if we're really going to background
-        Future.delayed(const Duration(milliseconds: 500), () {
+        Future.delayed(const Duration(milliseconds: 200), () {
           if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused) {
             print('🎵 Starting background audio (was playing: $_wasPlaying)');
             _startBackgroundAudio(_lastPosition ?? Duration.zero);
