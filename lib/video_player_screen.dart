@@ -613,18 +613,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        title: Text(widget.videoFile.path.split('/').last),
-        actions: [
-          if (_audioTracks.length > 1)
-            IconButton(
-              icon: const Icon(Icons.audiotrack),
-              onPressed: _showAudioTrackDialog,
-              tooltip: 'Audio Tracks',
-            ),
-        ],
-      ),
       body: _isInitialized
           ? GestureDetector(
         onTap: _toggleControls,
@@ -638,6 +626,58 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   aspectRatio: _controller.value.aspectRatio,
                   child: VideoPlayer(_controller),
                 ),
+                // Back button in top-left corner
+                if (_showControls)
+                  Positioned(
+                    top: 40,
+                    left: 16,
+                    child: IconButton(
+                      icon: const Icon(Icons.arrow_back, size: 32),
+                      color: Colors.white,
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ),
+                // Skip buttons - ALWAYS VISIBLE
+                Positioned(
+                  bottom: 100,
+                  left: 0,
+                  right: 0,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      // Skip backward 1 minute (far left)
+                      IconButton(
+                        icon: const Icon(Icons.replay_10, size: 36),
+                        onPressed: () {
+                          final current = _controller.value.position;
+                          final target = current - const Duration(minutes: 1);
+                          _controller.seekTo(
+                            target < Duration.zero ? Duration.zero : target,
+                          );
+                          if (_showControls) _startHideTimer();
+                        },
+                        tooltip: 'Back 1 minute',
+                        color: Colors.white,
+                      ),
+
+                      // Skip forward 1 minute (far right)
+                      IconButton(
+                        icon: const Icon(Icons.forward_10, size: 36),
+                        onPressed: () {
+                          final current = _controller.value.position;
+                          final duration = _controller.value.duration;
+                          final target = current + const Duration(minutes: 1);
+                          _controller.seekTo(
+                            target > duration ? duration : target,
+                          );
+                          if (_showControls) _startHideTimer();
+                        },
+                        tooltip: 'Forward 1 minute',
+                        color: Colors.white,
+                      ),
+                    ],
+                  ),
+                ),
                 if (_showControls)
                   Container(
                     color: Colors.black54,
@@ -645,25 +685,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                       mainAxisAlignment: MainAxisAlignment.end,
                       children: [
                         VideoProgressIndicator(_controller, allowScrubbing: true),
+                        // Play/Pause (center)
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            // Skip backward 1 minute
-                            IconButton(
-                              icon: const Icon(Icons.replay_10, size: 36),
-                              onPressed: () {
-                                final current = _controller.value.position;
-                                final target = current - const Duration(minutes: 1);
-                                _controller.seekTo(
-                                  target < Duration.zero ? Duration.zero : target,
-                                );
-                                if (_showControls) _startHideTimer();
-                              },
-                              tooltip: 'Back 1 minute',
-                              color: Colors.white,
-                            ),
-                            const SizedBox(width: 8),
-                            // Play/Pause
                             IconButton(
                               icon: Icon(
                                 _controller.value.isPlaying ? Icons.pause : Icons.play_arrow,
@@ -683,24 +708,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 });
                               },
                             ),
-                            const SizedBox(width: 8),
-                            // Skip forward 1 minute
-                            IconButton(
-                              icon: const Icon(Icons.forward_10, size: 36),
-                              onPressed: () {
-                                final current = _controller.value.position;
-                                final duration = _controller.value.duration;
-                                final target = current + const Duration(minutes: 1);
-                                _controller.seekTo(
-                                  target > duration ? duration : target,
-                                );
-                                if (_showControls) _startHideTimer();
-                              },
-                              tooltip: 'Forward 1 minute',
-                              color: Colors.white,
-                            ),
-                            const SizedBox(width: 16),
-                            // Volume
+                          ],
+                        ),
+                        // Volume and Audio track controls
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
                             IconButton(
                               icon: Icon(
                                 _controller.value.volume > 0 ? Icons.volume_up : Icons.volume_off,
@@ -712,7 +725,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                                 });
                               },
                             ),
-                            // Audio track selector
                             if (_audioTracks.length > 1)
                               IconButton(
                                 icon: const Icon(Icons.audiotrack, size: 32),
