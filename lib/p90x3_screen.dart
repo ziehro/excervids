@@ -90,6 +90,355 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     }
   }
 
+  // Add this method to _P90X3ScreenState class
+
+  Widget _buildCalendarView() {
+    if (programStartDate == null || selectedProgram == null) return const SizedBox();
+
+    // Calculate how many months we need to show (at least 3 for 90 days)
+    final endDate = programStartDate!.add(const Duration(days: 89));
+    final months = <DateTime>[];
+
+    var currentMonth = DateTime(programStartDate!.year, programStartDate!.month, 1);
+    final lastMonth = DateTime(endDate.year, endDate.month, 1);
+
+    while (currentMonth.isBefore(lastMonth) || currentMonth.isAtSameMomentAs(lastMonth)) {
+      months.add(currentMonth);
+      currentMonth = DateTime(currentMonth.year, currentMonth.month + 1, 1);
+    }
+
+    return Column(
+      children: months.map((month) => _buildMonthCalendar(month)).toList(),
+    );
+  }
+
+  Widget _buildMonthCalendar(DateTime month) {
+    final monthName = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'
+    ][month.month - 1];
+
+    // Get first day of month and calculate offset for Monday start
+    final firstDayOfMonth = DateTime(month.year, month.month, 1);
+    final lastDayOfMonth = DateTime(month.year, month.month + 1, 0);
+
+    // Calculate offset: 1 = Monday, 7 = Sunday
+    // We want Monday = 0, so: (weekday - 1) gives us 0 for Monday
+    final startOffset = (firstDayOfMonth.weekday - 1) % 7;
+    final daysInMonth = lastDayOfMonth.day;
+
+    // Calculate total cells needed
+    final totalCells = startOffset + daysInMonth;
+    final rows = (totalCells / 7).ceil();
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.04),
+              blurRadius: 20,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Month and Year header
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: Text(
+                '$monthName ${month.year}',
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+
+            // Weekday headers (Mon - Sun)
+            Row(
+              children: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) {
+                return Expanded(
+                  child: Center(
+                    child: Text(
+                      day,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 8),
+
+            // Calendar grid
+            Column(
+              children: List.generate(rows, (rowIndex) {
+                return Row(
+                  children: List.generate(7, (colIndex) {
+                    final cellIndex = rowIndex * 7 + colIndex;
+
+                    // Empty cell before month starts
+                    if (cellIndex < startOffset) {
+                      return Expanded(child: Container(height: 80));
+                    }
+
+                    final dayNumber = cellIndex - startOffset + 1;
+
+                    // Empty cell after month ends
+                    if (dayNumber > daysInMonth) {
+                      return Expanded(child: Container(height: 80));
+                    }
+
+                    final date = DateTime(month.year, month.month, dayNumber);
+                    final p90x3Day = _getP90X3DayForDate(date);
+
+                    return Expanded(
+                      child: _buildCalendarCell(date, p90x3Day),
+                    );
+                  }).toList(),
+                );
+              }),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  int? _getP90X3DayForDate(DateTime date) {
+    if (programStartDate == null) return null;
+
+    // Normalize both dates to midnight for accurate day counting
+    final normalizedDate = DateTime(date.year, date.month, date.day);
+    final normalizedStart = DateTime(
+        programStartDate!.year,
+        programStartDate!.month,
+        programStartDate!.day
+    );
+
+    final difference = normalizedDate.difference(normalizedStart).inDays;
+
+    // Day is 1-indexed, difference is 0-indexed
+    final p90x3Day = difference + 1;
+
+    if (p90x3Day < 1 || p90x3Day > 90) return null;
+
+    return p90x3Day;
+  }
+
+  Widget _buildCalendarCell(DateTime date, int? p90x3Day) {
+    // Check if this is today's actual date
+    final now = DateTime.now();
+    final isActualToday = date.year == now.year &&
+        date.month == now.month &&
+        date.day == now.day;
+
+    if (p90x3Day == null) {
+      // Just show the date if not part of program
+      return Container(
+        height: 80,
+        margin: const EdgeInsets.all(2),
+        decoration: BoxDecoration(
+          color: Colors.grey[50],
+          borderRadius: BorderRadius.circular(8),
+          border: isActualToday
+              ? Border.all(color: Colors.orange, width: 3)
+              : null,
+        ),
+        child: Center(
+          child: Text(
+            date.day.toString(),
+            style: TextStyle(
+              color: Colors.grey[400],
+              fontSize: 14,
+            ),
+          ),
+        ),
+      );
+    }
+
+    final workout = P90X3Schedule.getWorkoutForDay(selectedProgram!, p90x3Day);
+    final isCompleted = completedDays.contains(p90x3Day);
+    final isToday = p90x3Day == currentDay;
+    final isRest = workout.contains('Rest') || workout.contains('Dynamix');
+    final hasAbRipper = daysWithAbRipper.contains(p90x3Day);
+    final abCompleted = completedAbRipper.contains(p90x3Day);
+
+    return InkWell(
+      onTap: () => _showDayDialog(p90x3Day, workout, isCompleted, isRest),
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        height: 80,
+        margin: const EdgeInsets.all(2),
+        decoration: BoxDecoration(
+          gradient: isCompleted
+              ? LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Colors.green.shade400,
+              Colors.green.shade600,
+            ],
+          )
+              : isToday
+              ? LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Colors.blue.shade400,
+              Colors.blue.shade600,
+            ],
+          )
+              : null,
+          color: isCompleted || isToday
+              ? null
+              : isRest
+              ? Colors.grey[100]
+              : Colors.grey[50],
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: isActualToday
+                ? Colors.orange
+                : isToday
+                ? Colors.blue.shade300
+                : isCompleted
+                ? Colors.green.shade300
+                : Colors.grey.shade200,
+            width: isActualToday ? 3 : (isToday ? 2 : 1),
+          ),
+        ),
+        child: Stack(
+          children: [
+            // Main content
+            Padding(
+              padding: const EdgeInsets.all(4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Calendar date
+                  Text(
+                    date.day.toString(),
+                    style: TextStyle(
+                      color: isCompleted || isToday ? Colors.white : Colors.black87,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                  // P90X3 day number
+                  Text(
+                    'D$p90x3Day',
+                    style: TextStyle(
+                      color: isCompleted || isToday
+                          ? Colors.white.withOpacity(0.8)
+                          : Colors.grey[600],
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const Spacer(),
+                  // Workout name (abbreviated)
+                  Text(
+                    _abbreviateWorkout(workout),
+                    style: TextStyle(
+                      color: isCompleted || isToday
+                          ? Colors.white.withOpacity(0.9)
+                          : Colors.grey[700],
+                      fontSize: 9,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+
+            // Ab Ripper completed stripe (brown belt across)
+            if (abCompleted)
+              Positioned.fill(
+                child: CustomPaint(
+                  painter: DiagonalStripePainter(
+                    color: const Color(0xFF8B4513), // Brown
+                    strokeWidth: 2,
+                  ),
+                ),
+              ),
+
+            // Completed checkmark
+            if (isCompleted)
+              Positioned(
+                top: 2,
+                right: 2,
+                child: Container(
+                  padding: const EdgeInsets.all(1),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.3),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.check_rounded,
+                    color: Colors.white,
+                    size: 12,
+                  ),
+                ),
+              ),
+
+            // Ab Ripper scheduled indicator (belt emoji at bottom)
+            if (hasAbRipper)
+              Positioned(
+                bottom: 2,
+                right: 2,
+                child: Text(
+                  '🥋',
+                  style: TextStyle(
+                    fontSize: 10,
+                    shadows: [
+                      Shadow(
+                        color: Colors.black.withOpacity(0.3),
+                        offset: const Offset(0, 1),
+                        blurRadius: 2,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _abbreviateWorkout(String workout) {
+    // Abbreviate long workout names for calendar display
+    final abbreviations = {
+      'Total Synergistics': 'Total Syn',
+      'Agility X': 'Agility',
+      'The Challenge': 'Challenge',
+      'The Warrior': 'Warrior',
+      'Eccentric Upper': 'Ecc Upper',
+      'Eccentric Lower': 'Ecc Lower',
+      'Incinerator': 'Incin',
+      'Accelerator': 'Accel',
+      'Decelerator': 'Decel',
+      'Triometrics': 'Trio',
+      'Pilates X': 'Pilates',
+      'Isometrix': 'Iso',
+      'Rest or Dynamix': 'Rest',
+    };
+
+    return abbreviations[workout] ?? workout;
+  }
+
   void _selectProgram(String program) async {
     // Ask user if they want rest days on Sunday
     final alignToSunday = await showDialog<bool>(
@@ -100,7 +449,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
             style: TextStyle(fontWeight: FontWeight.bold)),
         content: const Text(
           'Do you want rest days to fall on Sundays?\n\n'
-              'This will adjust your program so rest days align with weekends and skip you to the current day of the week.',
+              'This will adjust your program so rest days align with weekends.',
         ),
         actions: [
           TextButton(
@@ -125,6 +474,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     setState(() {
       selectedProgram = program;
       completedDays.clear();
+      completedAbRipper.clear();
       alignRestToSunday = alignToSunday;
 
       // Auto-enable Ab Ripper for all eligible days
@@ -132,24 +482,25 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       final eligibleDays = P90X3Schedule.abRipperDays[program] ?? [];
       daysWithAbRipper.addAll(eligibleDays);
 
-      // Calculate start date and current day based on alignment preference
+      // Normalize today to midnight
       final today = DateTime.now();
+      final normalizedToday = DateTime(today.year, today.month, today.day);
+
       if (alignToSunday) {
-        // Find which day of the week day 7 (first rest day) should be
-        // We want it to be Sunday (7)
-        // So day 1 should be Monday (1)
-        final currentWeekday = today.weekday; // 1=Monday, 7=Sunday
-        final desiredWeekday = 1; // Monday
-        final daysToAdjust = (desiredWeekday - currentWeekday) % 7;
+        // We want Day 7, 14, 21, etc. to fall on Sunday
+        // So Day 1 should be on Monday
+        final currentWeekday = normalizedToday.weekday; // 1=Monday, 7=Sunday
 
-        // Start date is adjusted so Day 1 = Monday
-        programStartDate = today.add(Duration(days: daysToAdjust));
+        // Days back to most recent Monday (0 if today is Monday)
+        final daysBackToMonday = (currentWeekday - 1) % 7;
 
-        // Current day matches today's position in the week
-        // If today is Monday = Day 1, Tuesday = Day 2, ..., Sunday = Day 7
-        currentDay = currentWeekday;
+        // Program started on that Monday (normalized to midnight)
+        programStartDate = normalizedToday.subtract(Duration(days: daysBackToMonday));
+
+        // Current day = days since that Monday + 1
+        currentDay = daysBackToMonday + 1;
       } else {
-        programStartDate = today;
+        programStartDate = normalizedToday;
         currentDay = 1;
       }
     });
@@ -1097,206 +1448,38 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
 
           const SizedBox(height: 24),
 
-          // Calendar Section
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  '90-Day Calendar',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                Row(
-                  children: [
-                    _buildLegendItem(Colors.green, 'Done'),
-                    const SizedBox(width: 12),
-                    _buildLegendItem(Colors.blue, 'Today'),
-                  ],
-                ),
-              ],
-            ),
-          ),
 
-          const SizedBox(height: 16),
 
-          // Calendar Grid
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(24),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.04),
-                    blurRadius: 20,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
-              ),
-              padding: const EdgeInsets.all(16),
-              child: GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 7,
-                  childAspectRatio: 0.95,
-                  crossAxisSpacing: 8,
-                  mainAxisSpacing: 8,
-                ),
-                itemCount: 90,
-                itemBuilder: (context, index) {
-                  final day = index + 1;
-                  final workout = P90X3Schedule.getWorkoutForDay(selectedProgram!, day);
-                  final isCompleted = completedDays.contains(day);
-                  final isToday = day == currentDay;
-                  final isRest = workout.contains('Rest') || workout.contains('Dynamix');
-
-                  return InkWell(
-                    onTap: () => _showDayDialog(day, workout, isCompleted, isRest),
-                    borderRadius: BorderRadius.circular(14),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        gradient: isCompleted
-                            ? LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            Colors.green.shade400,
-                            Colors.green.shade600,
-                          ],
-                        )
-                            : isToday
-                            ? LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            Colors.blue.shade400,
-                            Colors.blue.shade600,
-                          ],
-                        )
-                            : null,
-                        color: isCompleted || isToday
-                            ? null
-                            : isRest
-                            ? Colors.grey[100]
-                            : Colors.grey[50],
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                          color: isToday
-                              ? Colors.blue.shade300
-                              : isCompleted
-                              ? Colors.green.shade300
-                              : Colors.grey.shade200,
-                          width: 2,
+                  // Calendar Section
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          '90-Day Calendar',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
-                        boxShadow: (isToday || isCompleted)
-                            ? [
-                          BoxShadow(
-                            color: (isCompleted
-                                ? Colors.green
-                                : Colors.blue).withOpacity(0.3),
-                            blurRadius: 8,
-                            offset: const Offset(0, 4),
-                          ),
-                        ]
-                            : null,
-                      ),
-                      child: Stack(
-                        children: [
-                          // Main content centered
-                          Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                // Day number
-                                Text(
-                                  day.toString(),
-                                  style: TextStyle(
-                                    color: isCompleted || isToday
-                                        ? Colors.white
-                                        : Colors.black87,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
-                                  ),
-                                ),
-                                // Day of week
-                                if (programStartDate != null)
-                                  Text(
-                                    _getDayOfWeek(day),
-                                    style: TextStyle(
-                                      color: isCompleted || isToday
-                                          ? Colors.white.withOpacity(0.8)
-                                          : Colors.grey[600],
-                                      fontSize: 9,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          ),
-                          // Ab Ripper completed stripe (brown belt across)
-                          if (completedAbRipper.contains(day))
-                            Positioned.fill(
-                              child: CustomPaint(
-                                painter: DiagonalStripePainter(
-                                  color: const Color(0xFF8B4513), // Brown
-                                  strokeWidth: 3,
-                                ),
-                              ),
-                            ),
-                          // Completed checkmark
-                          if (isCompleted)
-                            Positioned(
-                              top: 1,
-                              right: 1,
-                              child: Container(
-                                padding: const EdgeInsets.all(1),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.3),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: const Icon(
-                                  Icons.check_rounded,
-                                  color: Colors.white,
-                                  size: 10,
-                                ),
-                              ),
-                            ),
-                          // Ab Ripper scheduled indicator (belt emoji at bottom)
-                          if (daysWithAbRipper.contains(day))
-                            Positioned(
-                              bottom: 1,
-                              left: 0,
-                              right: 0,
-                              child: Center(
-                                child: Text(
-                                  '🥋',
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    shadows: [
-                                      Shadow(
-                                        color: Colors.black.withOpacity(0.3),
-                                        offset: const Offset(0, 1),
-                                        blurRadius: 2,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
+                        Row(
+                          children: [
+                            _buildLegendItem(Colors.green, 'Done'),
+                            const SizedBox(width: 12),
+                            _buildLegendItem(Colors.blue, 'Today'),
+                          ],
+                        ),
+                      ],
                     ),
-                  );
-                },
-              ),
-            ),
-          ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+// Calendar View (replaces the old grid)
+                  _buildCalendarView(),
+
+                  const SizedBox(height: 16),
         ],
             ),
       ),
