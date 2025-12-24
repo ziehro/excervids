@@ -364,12 +364,15 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
             ),
 
             // Ab Ripper completed stripe (brown belt across)
+            // In _buildCalendarCell, replace the Ab Ripper stripe section with:
+
+// Ab Ripper completed belt (horizontal squeeze effect)
             if (abCompleted)
               Positioned.fill(
                 child: CustomPaint(
-                  painter: DiagonalStripePainter(
-                    color: const Color(0xFF8B4513), // Brown
-                    strokeWidth: 2,
+                  painter: HorizontalBeltPainter(
+                    color: _getBeltColor(),
+                    strokeWidth: 8,
                   ),
                 ),
               ),
@@ -681,6 +684,46 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       return Icons.directions_run_rounded;
     } else {
       return Icons.fitness_center_rounded;
+    }
+  }
+
+  // Update _getBeltColor method in _P90X3ScreenState class:
+
+  Color _getBeltColor() {
+    final completedCount = completedDays.length;
+
+    if (completedCount < 23) {
+      // 0-22 days: Bronze
+      final progress = completedCount / 22;
+      return Color.lerp(
+        const Color(0xFFCD7F32), // Bronze
+        const Color(0xFFB8722C), // Darker bronze
+        progress,
+      )!;
+    } else if (completedCount < 45) {
+      // 23-44 days: Bronze to Silver
+      final progress = (completedCount - 23) / 22;
+      return Color.lerp(
+        const Color(0xFFB8722C), // Dark bronze
+        const Color(0xFFC0C0C0), // Silver
+        progress,
+      )!;
+    } else if (completedCount < 68) {
+      // 45-67 days: Silver to Gold
+      final progress = (completedCount - 45) / 22;
+      return Color.lerp(
+        const Color(0xFFC0C0C0), // Silver
+        const Color(0xFFFFD700), // Gold
+        progress,
+      )!;
+    } else {
+      // 68-90 days: Gold to Pure Platinum
+      final progress = (completedCount - 68) / 22;
+      return Color.lerp(
+        const Color(0xFFFFD700), // Gold
+        const Color(0xFFF4F4F4), // Pure Platinum (bright white-silver)
+        progress,
+      )!;
     }
   }
 
@@ -1817,28 +1860,51 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
 }
 
 // Custom painter for diagonal stripe (brown belt indicator)
-class DiagonalStripePainter extends CustomPainter {
+// Replace the DiagonalStripePainter class with HorizontalBeltPainter:
+
+// Update the HorizontalBeltPainter to only draw bottom belt:
+
+class HorizontalBeltPainter extends CustomPainter {
   final Color color;
   final double strokeWidth;
 
-  DiagonalStripePainter({
+  HorizontalBeltPainter({
     required this.color,
-    this.strokeWidth = 3,
+    this.strokeWidth = 8,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
       ..color = color
-      ..strokeWidth = strokeWidth
-      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.fill;
+
+    final shadowPaint = Paint()
+      ..color = Colors.black.withOpacity(0.3)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2);
+
+    // Bottom belt only
+    final bottomRect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(0, size.height * 0.70 - strokeWidth, size.width, strokeWidth),
+      const Radius.circular(2),
+    );
+
+    // Draw shadow first
+    canvas.drawRRect(bottomRect.shift(const Offset(0, 1)), shadowPaint);
+
+    // Draw belt
+    canvas.drawRRect(bottomRect, paint);
+
+    // Add highlight on top edge
+    final highlightPaint = Paint()
+      ..color = Colors.white.withOpacity(0.4)
+      ..strokeWidth = 1
       ..style = PaintingStyle.stroke;
 
-    // Draw diagonal stripe from top-left to bottom-right
     canvas.drawLine(
-      Offset(0, size.height * 0.3),
-      Offset(size.width, size.height * 0.7),
-      paint,
+      Offset(0, size.height * 0.70 - strokeWidth),
+      Offset(size.width, size.height * 0.70 - strokeWidth),
+      highlightPaint,
     );
   }
 

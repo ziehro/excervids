@@ -133,12 +133,14 @@ class MainScreen extends StatefulWidget {
   State<MainScreen> createState() => _MainScreenState();
 }
 
+// In main.dart, update MainScreen:
+
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
 
   final List<Widget> _screens = [
+    const P90X3Screen(),  // Moved to first position
     const VideoListScreen(),
-    const P90X3Screen(),
   ];
 
   @override
@@ -171,14 +173,14 @@ class _MainScreenState extends State<MainScreen> {
           labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
           destinations: const [
             NavigationDestination(
-              icon: Icon(Icons.play_circle_outline),
-              selectedIcon: Icon(Icons.play_circle),
-              label: 'Videos',
-            ),
-            NavigationDestination(
               icon: Icon(Icons.fitness_center_outlined),
               selectedIcon: Icon(Icons.fitness_center),
               label: 'P90X3',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.play_circle_outline),
+              selectedIcon: Icon(Icons.play_circle),
+              label: 'Videos',
             ),
           ],
         ),
