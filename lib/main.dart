@@ -121,70 +121,7 @@ class MyApp extends StatelessWidget {
           ),
         ),
       ),
-      home: const MainScreen(),
-    );
-  }
-}
-
-class MainScreen extends StatefulWidget {
-  const MainScreen({Key? key}) : super(key: key);
-
-  @override
-  State<MainScreen> createState() => _MainScreenState();
-}
-
-// In main.dart, update MainScreen:
-
-class _MainScreenState extends State<MainScreen> {
-  int _currentIndex = 0;
-
-  final List<Widget> _screens = [
-    const P90X3Screen(),  // Moved to first position
-    const VideoListScreen(),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: IndexedStack(
-        index: _currentIndex,
-        children: _screens,
-      ),
-      bottomNavigationBar: Container(
-        decoration: BoxDecoration(
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.1),
-              offset: const Offset(0, -2),
-              blurRadius: 8,
-            ),
-          ],
-        ),
-        child: NavigationBar(
-          selectedIndex: _currentIndex,
-          onDestinationSelected: (index) {
-            setState(() {
-              _currentIndex = index;
-            });
-          },
-          height: 70,
-          elevation: 0,
-          animationDuration: const Duration(milliseconds: 400),
-          labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-          destinations: const [
-            NavigationDestination(
-              icon: Icon(Icons.fitness_center_outlined),
-              selectedIcon: Icon(Icons.fitness_center),
-              label: 'P90X3',
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.play_circle_outline),
-              selectedIcon: Icon(Icons.play_circle),
-              label: 'Videos',
-            ),
-          ],
-        ),
-      ),
+      home: const P90X3Screen(), // Direct to P90X3, no tabs
     );
   }
 }
