@@ -28,6 +28,7 @@ class P90X3Screen extends StatefulWidget {
 class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStateMixin {
   String? selectedProgram;
   int currentDay = 1;
+  int? displayDay;
   Set<int> completedDays = {};
   Set<int> completedAbRipper = {};
   Set<int> daysWithAbRipper = {};
@@ -104,6 +105,24 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     // Save weights
     final weightsMap = workoutWeights.map((k, v) => MapEntry(k.toString(), v));
     await prefs.setString('p90x3_weights', const JsonEncoder().convert(weightsMap));
+  }
+
+  int get actualTodayP90X3Day {
+    if (programStartDate == null) return 1;
+
+    final today = DateTime.now();
+    final normalizedToday = DateTime(today.year, today.month, today.day);
+    final normalizedStart = DateTime(
+        programStartDate!.year,
+        programStartDate!.month,
+        programStartDate!.day
+    );
+
+    final difference = normalizedToday.difference(normalizedStart).inDays;
+    final day = difference + 1;
+
+    if (day < 1 || day > 90) return 1;
+    return day;
   }
 
   void _selectProgram(String program) async {
@@ -190,27 +209,28 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
   }
 
   void _goToPreviousDay() {
-    if (currentDay > 1) {
-      setState(() {
-        currentDay--;
-      });
-      _saveProgress();
-    }
+    setState(() {
+      final currentDisplay = displayDay ?? actualTodayP90X3Day;
+      if (currentDisplay > 1) {
+        displayDay = currentDisplay - 1;
+      }
+    });
   }
 
   void _goToNextDay() {
-    if (currentDay < 90) {
-      setState(() {
-        currentDay++;
-      });
-      _saveProgress();
-    }
+    setState(() {
+      final currentDisplay = displayDay ?? actualTodayP90X3Day;
+      if (currentDisplay < 90) {
+        displayDay = currentDisplay + 1;
+      }
+    });
   }
 
   void _resetToday() {
+    final today = displayDay ?? actualTodayP90X3Day;
     setState(() {
-      completedDays.remove(currentDay);
-      completedAbRipper.remove(currentDay);
+      completedDays.remove(today);
+      completedAbRipper.remove(today);
     });
     _saveProgress();
   }
@@ -351,10 +371,28 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     }
   }
 
+  // Update _showDayDialog to show different labels based on day:
+
   void _showDayDialog(int day, String workout, bool isCompleted, bool isRest) {
     final canHaveAbRipper = P90X3Schedule.canHaveAbRipper(selectedProgram!, day);
     final hasAbRipper = daysWithAbRipper.contains(day);
     final weightController = TextEditingController(text: workoutWeights[day] ?? '');
+
+    // Determine the day label based on actual calendar date
+    String dayLabel;
+    Color dayLabelColor;
+    if (day == actualTodayP90X3Day) { // Changed from currentDay
+      dayLabel = 'TODAY';
+      dayLabelColor = Colors.blue;
+    } else if (day < actualTodayP90X3Day) { // Changed from currentDay
+      dayLabel = 'PAST';
+      dayLabelColor = Colors.grey;
+    } else {
+      dayLabel = 'UPCOMING';
+      dayLabelColor = Colors.orange;
+    }
+
+    // Rest of the function stays the same...
 
     showDialog(
       context: context,
@@ -378,7 +416,27 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Day $day'),
+                  Row(
+                    children: [
+                      Text('Day $day'),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: dayLabelColor.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          dayLabel,
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: dayLabelColor,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                   if (programStartDate != null)
                     Text(
                       _getDayOfWeek(day),
@@ -764,10 +822,11 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
 
     final workout = P90X3Schedule.getWorkoutForDay(selectedProgram!, p90x3Day);
     final isCompleted = completedDays.contains(p90x3Day);
-    final isToday = p90x3Day == currentDay;
+    final isToday = p90x3Day == actualTodayP90X3Day; // Changed from currentDay
     final isRest = workout.contains('Rest') || workout.contains('Dynamix');
     final hasAbRipper = daysWithAbRipper.contains(p90x3Day);
     final abCompleted = completedAbRipper.contains(p90x3Day);
+    final hasWeight = workoutWeights.containsKey(p90x3Day);
 
     return InkWell(
       onTap: () => _showDayDialog(p90x3Day, workout, isCompleted, isRest),
@@ -814,9 +873,44 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
         ),
         child: Stack(
           children: [
+            // Weight banner at the very top (if has weight)
+            if (hasWeight)
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  decoration: BoxDecoration(
+                    color: isCompleted || isToday
+                        ? Colors.white.withOpacity(0.25)
+                        : Colors.blue.withOpacity(0.9),
+                    borderRadius: const BorderRadius.only(
+                      topLeft: Radius.circular(8),
+                      topRight: Radius.circular(8),
+                    ),
+                  ),
+                  child: Center(
+                    child: Text(
+                      '${workoutWeights[p90x3Day]}lb',
+                      style: TextStyle(
+                        color: isCompleted || isToday ? Colors.white : Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
             // Main content
             Padding(
-              padding: const EdgeInsets.all(4),
+              padding: EdgeInsets.only(
+                top: hasWeight ? 18 : 4,
+                left: 4,
+                right: 4,
+                bottom: 4,
+              ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -829,17 +923,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                       fontSize: 16,
                     ),
                   ),
-                  // P90X3 day number
-                  Text(
-                    'D$p90x3Day',
-                    style: TextStyle(
-                      color: isCompleted || isToday
-                          ? Colors.white.withOpacity(0.8)
-                          : Colors.grey[600],
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
+                  // Removed D1, D2, etc.
                   const Spacer(),
                   // Workout name (abbreviated)
                   Text(
@@ -870,7 +954,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
               ),
 
             // Completed checkmark (only if no weight)
-            if (isCompleted && !workoutWeights.containsKey(p90x3Day))
+            if (isCompleted && !hasWeight)
               Positioned(
                 top: 2,
                 right: 2,
@@ -884,36 +968,6 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                     Icons.check_rounded,
                     color: Colors.white,
                     size: 12,
-                  ),
-                ),
-              ),
-
-            // Weight display in top right
-            if (workoutWeights.containsKey(p90x3Day))
-              Positioned(
-                top: 2,
-                right: 2,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: isCompleted || isToday
-                        ? Colors.white.withOpacity(0.9)
-                        : Colors.blue.withOpacity(0.9),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(
-                      color: isCompleted || isToday
-                          ? Colors.black.withOpacity(0.2)
-                          : Colors.white,
-                      width: 0.5,
-                    ),
-                  ),
-                  child: Text(
-                    '${workoutWeights[p90x3Day]}lb',
-                    style: TextStyle(
-                      color: isCompleted || isToday ? Colors.black87 : Colors.white,
-                      fontSize: 8,
-                      fontWeight: FontWeight.bold,
-                    ),
                   ),
                 ),
               ),
@@ -1008,11 +1062,13 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       return _buildProgramSelection();
     }
 
-    final todayWorkout = P90X3Schedule.getWorkoutForDay(selectedProgram!, currentDay);
+    // Use displayDay if set, otherwise use actual today
+    final currentDisplayDay = displayDay ?? actualTodayP90X3Day;
+    final todayWorkout = P90X3Schedule.getWorkoutForDay(selectedProgram!, currentDisplayDay);
     final completedCount = completedDays.length;
     final progressPercent = completedCount / 90;
-    final canHaveAbRipper = P90X3Schedule.canHaveAbRipper(selectedProgram!, currentDay);
-    final hasAbRipper = daysWithAbRipper.contains(currentDay);
+    final canHaveAbRipper = P90X3Schedule.canHaveAbRipper(selectedProgram!, currentDisplayDay);
+    final hasAbRipper = daysWithAbRipper.contains(currentDisplayDay);
 
     return Scaffold(
       body: Container(
@@ -1083,7 +1139,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                           ],
                         ),
                       ),
-                      // Menu button instead of reset
+                      // Menu button
                       PopupMenuButton<String>(
                         icon: const Icon(Icons.more_vert_rounded),
                         shape: RoundedRectangleBorder(
@@ -1117,6 +1173,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                         completedDays.clear();
                                         completedAbRipper.clear();
                                         currentDay = 1;
+                                        displayDay = null;
                                         programStartDate = null;
                                       });
                                       _saveProgress();
@@ -1189,7 +1246,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceAround,
                       children: [
-                        _buildCircularStat('Day', currentDay, 90, Colors.blue),
+                        _buildCircularStat('Day', currentDisplayDay, 90, Colors.blue),
                         Container(
                           width: 1,
                           height: 50,
@@ -1236,6 +1293,8 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          // In the build method, update the label logic in the Today's Workout Card section:
+
                           Row(
                             children: [
                               Container(
@@ -1256,7 +1315,22 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      'TODAY',
+                                          () {
+                                        // Calculate the difference between display day and actual today
+                                        final diff = currentDisplayDay - actualTodayP90X3Day;
+                                        if (diff == 0) return 'TODAY';
+                                        if (diff == 1) return 'TOMORROW';
+                                        if (diff == -1) return 'YESTERDAY';
+
+                                        // Otherwise show the actual date
+                                        if (programStartDate != null) {
+                                          final date = programStartDate!.add(Duration(days: currentDisplayDay - 1));
+                                          final months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+                                            'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+                                          return '${months[date.month - 1]} ${date.day}';
+                                        }
+                                        return 'DAY';
+                                      }(),
                                       style: TextStyle(
                                         color: Colors.white.withOpacity(0.9),
                                         fontSize: 12,
@@ -1265,7 +1339,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                       ),
                                     ),
                                     Text(
-                                      'Day $currentDay of 90',
+                                      'Day $currentDisplayDay of 90',
                                       style: const TextStyle(
                                         color: Colors.white,
                                         fontSize: 18,
@@ -1275,7 +1349,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                   ],
                                 ),
                               ),
-                              if (completedDays.contains(currentDay))
+                              if (completedDays.contains(currentDisplayDay))
                                 Container(
                                   padding: const EdgeInsets.all(8),
                                   decoration: BoxDecoration(
@@ -1329,7 +1403,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                 child: IconButton(
                                   icon: const Icon(Icons.chevron_left_rounded, size: 20),
                                   color: Colors.white,
-                                  onPressed: currentDay > 1 ? _goToPreviousDay : null,
+                                  onPressed: currentDisplayDay > 1 ? _goToPreviousDay : null,
                                   tooltip: 'Previous Day',
                                   padding: const EdgeInsets.all(8),
                                   constraints: const BoxConstraints(),
@@ -1346,7 +1420,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                     borderRadius: BorderRadius.circular(12),
                                   ),
                                   child: Text(
-                                    _getDayOfWeek(currentDay),
+                                    _getDayOfWeek(currentDisplayDay),
                                     style: const TextStyle(
                                       color: Colors.white,
                                       fontSize: 13,
@@ -1367,7 +1441,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                   icon: const Icon(Icons.replay_rounded, size: 20),
                                   color: Colors.white,
                                   onPressed: _resetToday,
-                                  tooltip: 'Reset Today',
+                                  tooltip: 'Reset Day',
                                   padding: const EdgeInsets.all(8),
                                   constraints: const BoxConstraints(),
                                 ),
@@ -1383,7 +1457,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                 child: IconButton(
                                   icon: const Icon(Icons.chevron_right_rounded, size: 20),
                                   color: Colors.white,
-                                  onPressed: currentDay < 90 ? _goToNextDay : null,
+                                  onPressed: currentDisplayDay < 90 ? _goToNextDay : null,
                                   tooltip: 'Next Day',
                                   padding: const EdgeInsets.all(8),
                                   constraints: const BoxConstraints(),
@@ -1401,7 +1475,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                   child: ElevatedButton.icon(
                                     onPressed: todayWorkout.contains('Rest')
                                         ? null
-                                        : () => _playVideo(todayWorkout, currentDay),
+                                        : () => _playVideo(todayWorkout, currentDisplayDay),
                                     icon: const Icon(Icons.play_arrow_rounded, size: 24),
                                     label: const Text(
                                       'MAIN',
@@ -1427,7 +1501,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                 const SizedBox(width: 12),
                                 Expanded(
                                   child: ElevatedButton.icon(
-                                    onPressed: () => _playVideo('Ab Ripper X', currentDay),
+                                    onPressed: () => _playVideo('Ab Ripper X', currentDisplayDay),
                                     icon: const Text('🥋', style: TextStyle(fontSize: 20)),
                                     label: const Text(
                                       'AB RIPPER',
@@ -1459,14 +1533,14 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                     animation: _animationController,
                                     builder: (context, child) {
                                       return OutlinedButton.icon(
-                                        onPressed: () => _markDayComplete(currentDay),
+                                        onPressed: () => _markDayComplete(currentDisplayDay),
                                         icon: Icon(
-                                          completedDays.contains(currentDay)
+                                          completedDays.contains(currentDisplayDay)
                                               ? Icons.check_circle_rounded
                                               : Icons.check_circle_outline_rounded,
                                         ),
                                         label: Text(
-                                          completedDays.contains(currentDay) ? 'DONE' : 'MARK DONE',
+                                          completedDays.contains(currentDisplayDay) ? 'DONE' : 'MARK DONE',
                                           style: const TextStyle(
                                             fontSize: 12,
                                             fontWeight: FontWeight.bold,
@@ -1475,12 +1549,12 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                         style: OutlinedButton.styleFrom(
                                           foregroundColor: Colors.white,
                                           side: BorderSide(
-                                            color: completedDays.contains(currentDay)
+                                            color: completedDays.contains(currentDisplayDay)
                                                 ? Colors.green
                                                 : Colors.white.withOpacity(0.5),
                                             width: 2,
                                           ),
-                                          backgroundColor: completedDays.contains(currentDay)
+                                          backgroundColor: completedDays.contains(currentDisplayDay)
                                               ? Colors.green.withOpacity(0.3)
                                               : Colors.transparent,
                                           padding: const EdgeInsets.symmetric(vertical: 12),
@@ -1498,14 +1572,14 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                     animation: _animationController,
                                     builder: (context, child) {
                                       return OutlinedButton.icon(
-                                        onPressed: () => _toggleAbRipperComplete(currentDay),
+                                        onPressed: () => _toggleAbRipperComplete(currentDisplayDay),
                                         icon: Icon(
-                                          completedAbRipper.contains(currentDay)
+                                          completedAbRipper.contains(currentDisplayDay)
                                               ? Icons.check_circle_rounded
                                               : Icons.check_circle_outline_rounded,
                                         ),
                                         label: Text(
-                                          completedAbRipper.contains(currentDay) ? 'AB DONE' : 'AB MARK',
+                                          completedAbRipper.contains(currentDisplayDay) ? 'AB DONE' : 'AB MARK',
                                           style: const TextStyle(
                                             fontSize: 12,
                                             fontWeight: FontWeight.bold,
@@ -1514,12 +1588,12 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                         style: OutlinedButton.styleFrom(
                                           foregroundColor: Colors.white,
                                           side: BorderSide(
-                                            color: completedAbRipper.contains(currentDay)
+                                            color: completedAbRipper.contains(currentDisplayDay)
                                                 ? Colors.orange
                                                 : Colors.white.withOpacity(0.5),
                                             width: 2,
                                           ),
-                                          backgroundColor: completedAbRipper.contains(currentDay)
+                                          backgroundColor: completedAbRipper.contains(currentDisplayDay)
                                               ? Colors.orange.withOpacity(0.3)
                                               : Colors.transparent,
                                           padding: const EdgeInsets.symmetric(vertical: 12),
@@ -1539,13 +1613,18 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                               children: [
                                 Expanded(
                                   child: ElevatedButton.icon(
-                                    onPressed: todayWorkout.contains('Rest')
-                                        ? null
-                                        : () => _playVideo(todayWorkout, currentDay),
+                                    onPressed: () {
+                                      // Handle Rest or Dynamix
+                                      if (todayWorkout.contains('Dynamix')) {
+                                        _playVideo('Dynamix', currentDisplayDay);
+                                      } else if (!todayWorkout.contains('Rest')) {
+                                        _playVideo(todayWorkout, currentDisplayDay);
+                                      }
+                                    },
                                     icon: const Icon(Icons.play_arrow_rounded, size: 28),
-                                    label: const Text(
-                                      'PLAY WORKOUT',
-                                      style: TextStyle(
+                                    label: Text(
+                                      todayWorkout.contains('Dynamix') ? 'PLAY DYNAMIX' : 'PLAY WORKOUT',
+                                      style: const TextStyle(
                                         fontSize: 16,
                                         fontWeight: FontWeight.bold,
                                         letterSpacing: 1,
@@ -1554,8 +1633,6 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor: Colors.white,
                                       foregroundColor: _getWorkoutColor(todayWorkout),
-                                      disabledBackgroundColor: Colors.white.withOpacity(0.3),
-                                      disabledForegroundColor: Colors.white,
                                       padding: const EdgeInsets.symmetric(vertical: 18),
                                       shape: RoundedRectangleBorder(
                                         borderRadius: BorderRadius.circular(16),
@@ -1577,13 +1654,13 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                         ),
                                         child: IconButton(
                                           icon: Icon(
-                                            completedDays.contains(currentDay)
+                                            completedDays.contains(currentDisplayDay)
                                                 ? Icons.check_circle_rounded
                                                 : Icons.check_circle_outline_rounded,
                                             size: 36,
                                           ),
                                           color: Colors.white,
-                                          onPressed: () => _markDayComplete(currentDay),
+                                          onPressed: () => _markDayComplete(currentDisplayDay),
                                           padding: const EdgeInsets.all(12),
                                         ),
                                       ),
