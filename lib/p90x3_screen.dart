@@ -972,15 +972,15 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                 ),
               ),
 
-            // Ab Ripper scheduled indicator (belt emoji at bottom)
+            // Ab Ripper scheduled indicator (belt emoji on the right side of belt)
             if (hasAbRipper)
               Positioned(
-                bottom: 2,
-                right: 2,
+                top: 33, // Position it near the belt
+                right: 4,
                 child: Text(
                   '🥋',
                   style: TextStyle(
-                    fontSize: 10,
+                    fontSize: 12, // Slightly bigger
                     shadows: [
                       Shadow(
                         color: Colors.black.withOpacity(0.3),
@@ -2046,7 +2046,8 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
   }
 }
 
-// Custom painter for horizontal belt (bottom only)
+// Update the HorizontalBeltPainter class:
+
 class HorizontalBeltPainter extends CustomPainter {
   final Color color;
   final double strokeWidth;
@@ -2066,9 +2067,9 @@ class HorizontalBeltPainter extends CustomPainter {
       ..color = Colors.black.withOpacity(0.3)
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2);
 
-    // Bottom belt only
+    // Bottom belt - moved up from 0.70 to 0.55
     final bottomRect = RRect.fromRectAndRadius(
-      Rect.fromLTWH(0, size.height * 0.70 - strokeWidth, size.width, strokeWidth),
+      Rect.fromLTWH(0, size.height * 0.60 - strokeWidth, size.width, strokeWidth),
       const Radius.circular(2),
     );
 
@@ -2085,8 +2086,8 @@ class HorizontalBeltPainter extends CustomPainter {
       ..style = PaintingStyle.stroke;
 
     canvas.drawLine(
-      Offset(0, size.height * 0.70 - strokeWidth),
-      Offset(size.width, size.height * 0.70 - strokeWidth),
+      Offset(0, size.height * 0.60 - strokeWidth),
+      Offset(size.width, size.height * 0.60 - strokeWidth),
       highlightPaint,
     );
   }
