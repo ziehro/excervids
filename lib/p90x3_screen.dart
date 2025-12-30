@@ -32,6 +32,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
   Set<int> completedDays = {};
   Set<int> completedAbRipper = {};
   Set<int> daysWithAbRipper = {};
+  Set<int> completedElliptical = {};
   Map<int, String> workoutWeights = {}; // Store weights by day
   DateTime? programStartDate;
   bool alignRestToSunday = false;
@@ -70,6 +71,10 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
         programStartDate = DateTime.parse(startStr);
       }
 
+      // Load elliptical completion
+      final completedEllip = prefs.getStringList('p90x3_completed_elliptical') ?? [];
+      completedElliptical = completedEllip.map((e) => int.parse(e)).toSet();
+
       // Load weights
       final weightsJson = prefs.getString('p90x3_weights');
       if (weightsJson != null) {
@@ -97,6 +102,10 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       'p90x3_ab_ripper',
       daysWithAbRipper.map((e) => e.toString()).toList(),
     );
+    await prefs.setStringList(
+      'p90x3_completed_elliptical',
+      completedElliptical.map((e) => e.toString()).toList(),
+    );
     await prefs.setBool('p90x3_align_rest_sunday', alignRestToSunday);
     if (programStartDate != null) {
       await prefs.setString('p90x3_start_date', programStartDate!.toIso8601String());
@@ -105,6 +114,18 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     // Save weights
     final weightsMap = workoutWeights.map((k, v) => MapEntry(k.toString(), v));
     await prefs.setString('p90x3_weights', const JsonEncoder().convert(weightsMap));
+  }
+
+  void _toggleEllipticalComplete(int day) {
+    setState(() {
+      if (completedElliptical.contains(day)) {
+        completedElliptical.remove(day);
+      } else {
+        completedElliptical.add(day);
+        _animationController.forward(from: 0);
+      }
+    });
+    _saveProgress();
   }
 
   int get actualTodayP90X3Day {
@@ -231,6 +252,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     setState(() {
       completedDays.remove(today);
       completedAbRipper.remove(today);
+      completedElliptical.remove(today);
     });
     _saveProgress();
   }
@@ -371,8 +393,6 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     }
   }
 
-  // Update _showDayDialog to show different labels based on day:
-
   void _showDayDialog(int day, String workout, bool isCompleted, bool isRest) {
     final canHaveAbRipper = P90X3Schedule.canHaveAbRipper(selectedProgram!, day);
     final hasAbRipper = daysWithAbRipper.contains(day);
@@ -381,18 +401,16 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     // Determine the day label based on actual calendar date
     String dayLabel;
     Color dayLabelColor;
-    if (day == actualTodayP90X3Day) { // Changed from currentDay
+    if (day == actualTodayP90X3Day) {
       dayLabel = 'TODAY';
       dayLabelColor = Colors.blue;
-    } else if (day < actualTodayP90X3Day) { // Changed from currentDay
+    } else if (day < actualTodayP90X3Day) {
       dayLabel = 'PAST';
       dayLabelColor = Colors.grey;
     } else {
       dayLabel = 'UPCOMING';
       dayLabelColor = Colors.orange;
     }
-
-    // Rest of the function stays the same...
 
     showDialog(
       context: context,
@@ -556,6 +574,33 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                   ),
                 ),
               ],
+              // Elliptical status
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: (completedElliptical.contains(day) ? Colors.purple : Colors.grey).withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      completedElliptical.contains(day) ? Icons.check_circle : Icons.pending,
+                      color: completedElliptical.contains(day) ? Colors.purple : Colors.grey,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Elliptical: ${completedElliptical.contains(day) ? "Completed" : "Pending"}',
+                        style: TextStyle(
+                          color: completedElliptical.contains(day) ? Colors.purple : Colors.grey,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
@@ -597,6 +642,21 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
               ),
             ),
           ],
+          ElevatedButton.icon(
+            onPressed: () {
+              _toggleEllipticalComplete(day);
+              Navigator.pop(context);
+            },
+            icon: Icon(completedElliptical.contains(day) ? Icons.close : Icons.check),
+            label: Text(completedElliptical.contains(day) ? 'Undo Ellip' : 'Ellip Done'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: completedElliptical.contains(day) ? Colors.purple.shade300 : Colors.purple,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
           if (hasAbRipper)
             ElevatedButton.icon(
               onPressed: () {
@@ -991,6 +1051,27 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                   ),
                 ),
               ),
+            // Add this after the Ab Ripper belt emoji section:
+
+// Elliptical completed indicator (on left side of belt)
+            if (completedElliptical.contains(p90x3Day))
+              Positioned(
+                top: 33, // Same position as karate emoji
+                left: 4,
+                child: Text(
+                  '⚡',
+                  style: TextStyle(
+                    fontSize: 12,
+                    shadows: [
+                      Shadow(
+                        color: Colors.black.withOpacity(0.3),
+                        offset: const Offset(0, 1),
+                        blurRadius: 2,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
           ],
         ),
       ),
@@ -1172,6 +1253,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                         selectedProgram = null;
                                         completedDays.clear();
                                         completedAbRipper.clear();
+                                        completedElliptical.clear(); // Add this line
                                         currentDay = 1;
                                         displayDay = null;
                                         programStartDate = null;
@@ -1266,7 +1348,9 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
 
                 const SizedBox(height: 24),
 
-                // Today's Workout Card
+                // In the build method, update the Today's Workout Card section:
+
+// Today's Workout Card
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Container(
@@ -1293,8 +1377,6 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // In the build method, update the label logic in the Today's Workout Card section:
-
                           Row(
                             children: [
                               Container(
@@ -1349,6 +1431,25 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                   ],
                                 ),
                               ),
+                              // Elliptical checkbox (top right)
+                              Container(
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.25),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: IconButton(
+                                  icon: Text(
+                                    completedElliptical.contains(currentDisplayDay) ? '⚡' : '⚪',
+                                    style: const TextStyle(fontSize: 20),
+                                  ),
+                                  onPressed: () => _toggleEllipticalComplete(currentDisplayDay),
+                                  tooltip: 'Elliptical',
+                                  padding: const EdgeInsets.all(8),
+                                  constraints: const BoxConstraints(),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              // Main workout completion (was already here)
                               if (completedDays.contains(currentDisplayDay))
                                 Container(
                                   padding: const EdgeInsets.all(8),
@@ -1364,6 +1465,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                 ),
                             ],
                           ),
+                          // ... rest of the card stays the same
                           const SizedBox(height: 20),
                           Row(
                             children: [
