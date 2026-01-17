@@ -116,6 +116,170 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     await prefs.setString('p90x3_weights', const JsonEncoder().convert(weightsMap));
   }
 
+  Future<void> _exportBackup() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      final backupData = {
+        'version': 1,
+        'exportDate': DateTime.now().toIso8601String(),
+        'p90x3_program': prefs.getString('p90x3_program'),
+        'p90x3_current_day': prefs.getInt('p90x3_current_day'),
+        'p90x3_completed': prefs.getStringList('p90x3_completed'),
+        'p90x3_completed_ab': prefs.getStringList('p90x3_completed_ab'),
+        'p90x3_ab_ripper': prefs.getStringList('p90x3_ab_ripper'),
+        'p90x3_completed_elliptical': prefs.getStringList('p90x3_completed_elliptical'),
+        'p90x3_align_rest_sunday': prefs.getBool('p90x3_align_rest_sunday'),
+        'p90x3_start_date': prefs.getString('p90x3_start_date'),
+        'p90x3_weights': prefs.getString('p90x3_weights'),
+      };
+
+      final jsonStr = const JsonEncoder.withIndent('  ').convert(backupData);
+      final downloadsDir = Directory('/storage/emulated/0/Download');
+      final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+      final file = File('${downloadsDir.path}/excervids_backup_$timestamp.json');
+      await file.writeAsString(jsonStr);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Backup saved to: ${file.path}'),
+            backgroundColor: P90X3Colors.success,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Backup failed: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _importBackup() async {
+    try {
+      final downloadsDir = Directory('/storage/emulated/0/Download');
+      final files = await downloadsDir.list().toList();
+      final backupFiles = files
+          .whereType<File>()
+          .where((f) => f.path.contains('excervids_backup') && f.path.endsWith('.json'))
+          .toList();
+
+      if (backupFiles.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('No backup files found in Downloads folder'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
+
+      // Sort by name (most recent first due to timestamp)
+      backupFiles.sort((a, b) => b.path.compareTo(a.path));
+
+      // Show file picker dialog
+      if (!mounted) return;
+      final selectedFile = await showDialog<File>(
+        context: context,
+        builder: (context) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Row(
+            children: [
+              Icon(Icons.restore, color: P90X3Colors.primary),
+              SizedBox(width: 12),
+              Text('Select Backup'),
+            ],
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: backupFiles.length,
+              itemBuilder: (context, index) {
+                final file = backupFiles[index];
+                final name = file.path.split('/').last;
+                return ListTile(
+                  leading: const Icon(Icons.file_present),
+                  title: Text(name, style: const TextStyle(fontSize: 14)),
+                  onTap: () => Navigator.pop(context, file),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      );
+
+      if (selectedFile == null) return;
+
+      final jsonStr = await selectedFile.readAsString();
+      final backupData = Map<String, dynamic>.from(const JsonDecoder().convert(jsonStr));
+
+      final prefs = await SharedPreferences.getInstance();
+
+      if (backupData['p90x3_program'] != null) {
+        await prefs.setString('p90x3_program', backupData['p90x3_program']);
+      }
+      if (backupData['p90x3_current_day'] != null) {
+        await prefs.setInt('p90x3_current_day', backupData['p90x3_current_day']);
+      }
+      if (backupData['p90x3_completed'] != null) {
+        await prefs.setStringList('p90x3_completed', List<String>.from(backupData['p90x3_completed']));
+      }
+      if (backupData['p90x3_completed_ab'] != null) {
+        await prefs.setStringList('p90x3_completed_ab', List<String>.from(backupData['p90x3_completed_ab']));
+      }
+      if (backupData['p90x3_ab_ripper'] != null) {
+        await prefs.setStringList('p90x3_ab_ripper', List<String>.from(backupData['p90x3_ab_ripper']));
+      }
+      if (backupData['p90x3_completed_elliptical'] != null) {
+        await prefs.setStringList('p90x3_completed_elliptical', List<String>.from(backupData['p90x3_completed_elliptical']));
+      }
+      if (backupData['p90x3_align_rest_sunday'] != null) {
+        await prefs.setBool('p90x3_align_rest_sunday', backupData['p90x3_align_rest_sunday']);
+      }
+      if (backupData['p90x3_start_date'] != null) {
+        await prefs.setString('p90x3_start_date', backupData['p90x3_start_date']);
+      }
+      if (backupData['p90x3_weights'] != null) {
+        await prefs.setString('p90x3_weights', backupData['p90x3_weights']);
+      }
+
+      await _loadProgress();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Backup restored successfully!'),
+            backgroundColor: P90X3Colors.success,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Import failed: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   void _toggleEllipticalComplete(int day) {
     setState(() {
       if (completedElliptical.contains(day)) {
@@ -1280,6 +1444,10 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                 builder: (context) => const VideoListScreen(),
                               ),
                             );
+                          } else if (value == 'export') {
+                            _exportBackup();
+                          } else if (value == 'import') {
+                            _importBackup();
                           }
                         },
                         itemBuilder: (context) => [
@@ -1290,6 +1458,26 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                 Icon(Icons.play_circle_outline, size: 20),
                                 SizedBox(width: 12),
                                 Text('Videos'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'export',
+                            child: Row(
+                              children: [
+                                Icon(Icons.upload_rounded, size: 20, color: P90X3Colors.primary),
+                                SizedBox(width: 12),
+                                Text('Export Backup'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'import',
+                            child: Row(
+                              children: [
+                                Icon(Icons.download_rounded, size: 20, color: P90X3Colors.success),
+                                SizedBox(width: 12),
+                                Text('Import Backup'),
                               ],
                             ),
                           ),

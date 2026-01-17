@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:icons8.com)",
+      "WebFetch(domain:uxwing.com)",
+      "Bash(curl:*)",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\ziehr\\\\AndroidStudioProjects\\\\excervids\\\\resize_icon.ps1\")"
+    ]
+  }
+}
