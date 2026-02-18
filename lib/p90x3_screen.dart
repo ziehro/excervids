@@ -1534,6 +1534,52 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                   ),
                 ),
 
+                const SizedBox(height: 12),
+
+                // Workout Completion Counters
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(24),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.06),
+                          blurRadius: 24,
+                          offset: const Offset(0, 8),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        _buildCompactCounter(
+                          'Total',
+                          completedDays.length + completedAbRipper.length + completedElliptical.length,
+                          Icons.fitness_center,
+                          Colors.deepPurple,
+                        ),
+                        Container(width: 1, height: 40, color: Colors.grey[200]),
+                        _buildCompactCounter(
+                          'Ab Rippers',
+                          completedAbRipper.length,
+                          Icons.sports_martial_arts,
+                          Colors.red,
+                        ),
+                        Container(width: 1, height: 40, color: Colors.grey[200]),
+                        _buildCompactCounter(
+                          'Cardios',
+                          completedElliptical.length,
+                          Icons.directions_run,
+                          Colors.teal,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
                 const SizedBox(height: 24),
 
                 // In the build method, update the Today's Workout Card section:
@@ -2111,6 +2157,39 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
           style: TextStyle(
             fontSize: 10,
             color: Colors.grey[400],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCompactCounter(String label, int count, IconData icon, Color color) {
+    return Column(
+      children: [
+        Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Icon(icon, color: color, size: 22),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          count.toString(),
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            color: Colors.grey[600],
+            fontWeight: FontWeight.w500,
           ),
         ),
       ],
