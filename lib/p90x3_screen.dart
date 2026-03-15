@@ -36,7 +36,28 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
   Map<int, String> workoutWeights = {}; // Store weights by day
   DateTime? programStartDate;
   bool alignRestToSunday = false;
+  bool _celebrationShown = false;
+  bool isRestWeek = false;
+  DateTime? restWeekStartDate;
   late AnimationController _animationController;
+
+  // Makeup week state
+  bool isMakeupWeek = false;
+  List<Map<String, dynamic>> makeupSchedule = [];
+  Set<int> completedMakeupDays = {};
+  Set<int> completedMakeupAbRipper = {};
+  Set<int> completedMakeupElliptical = {};
+  int currentMakeupIndex = 0;
+
+  bool get isProgramComplete => completedDays.contains(90);
+
+  String get _beltName {
+    final count = completedDays.length;
+    if (count >= 68) return 'Platinum';
+    if (count >= 45) return 'Gold';
+    if (count >= 23) return 'Silver';
+    return 'Bronze';
+  }
 
   @override
   void initState() {
@@ -83,7 +104,39 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
         );
         workoutWeights = decoded.map((k, v) => MapEntry(int.parse(k), v.toString()));
       }
+
+      // Load completion/rest week state
+      _celebrationShown = prefs.getBool('p90x3_celebration_shown') ?? false;
+      isRestWeek = prefs.getBool('p90x3_rest_week') ?? false;
+      final restStartStr = prefs.getString('p90x3_rest_week_start');
+      if (restStartStr != null) {
+        restWeekStartDate = DateTime.parse(restStartStr);
+      }
+
+      // Load makeup week state
+      isMakeupWeek = prefs.getBool('p90x3_makeup_week') ?? false;
+      final makeupJson = prefs.getString('p90x3_makeup_schedule');
+      if (makeupJson != null) {
+        final decoded = List<dynamic>.from(const JsonDecoder().convert(makeupJson));
+        makeupSchedule = decoded.map((e) => Map<String, dynamic>.from(e)).toList();
+      }
+      final completedMakeup = prefs.getStringList('p90x3_completed_makeup') ?? [];
+      completedMakeupDays = completedMakeup.map((e) => int.parse(e)).toSet();
+      final completedMakeupAb = prefs.getStringList('p90x3_completed_makeup_ab') ?? [];
+      completedMakeupAbRipper = completedMakeupAb.map((e) => int.parse(e)).toSet();
+      final completedMakeupEllip = prefs.getStringList('p90x3_completed_makeup_elliptical') ?? [];
+      completedMakeupElliptical = completedMakeupEllip.map((e) => int.parse(e)).toSet();
+      currentMakeupIndex = prefs.getInt('p90x3_current_makeup_index') ?? 0;
     });
+
+    // Check if rest week has expired
+    if (isRestWeek && restWeekStartDate != null) {
+      final daysSinceRest = DateTime.now().difference(restWeekStartDate!).inDays;
+      if (daysSinceRest >= 7) {
+        // Rest week is over, prompt program selection
+        _endRestWeek();
+      }
+    }
   }
 
   Future<void> _saveProgress() async {
@@ -114,6 +167,36 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     // Save weights
     final weightsMap = workoutWeights.map((k, v) => MapEntry(k.toString(), v));
     await prefs.setString('p90x3_weights', const JsonEncoder().convert(weightsMap));
+
+    // Save completion/rest week state
+    await prefs.setBool('p90x3_celebration_shown', _celebrationShown);
+    await prefs.setBool('p90x3_rest_week', isRestWeek);
+    if (restWeekStartDate != null) {
+      await prefs.setString('p90x3_rest_week_start', restWeekStartDate!.toIso8601String());
+    } else {
+      await prefs.remove('p90x3_rest_week_start');
+    }
+
+    // Save makeup week state
+    await prefs.setBool('p90x3_makeup_week', isMakeupWeek);
+    if (makeupSchedule.isNotEmpty) {
+      await prefs.setString('p90x3_makeup_schedule', const JsonEncoder().convert(makeupSchedule));
+    } else {
+      await prefs.remove('p90x3_makeup_schedule');
+    }
+    await prefs.setStringList(
+      'p90x3_completed_makeup',
+      completedMakeupDays.map((e) => e.toString()).toList(),
+    );
+    await prefs.setStringList(
+      'p90x3_completed_makeup_ab',
+      completedMakeupAbRipper.map((e) => e.toString()).toList(),
+    );
+    await prefs.setStringList(
+      'p90x3_completed_makeup_elliptical',
+      completedMakeupElliptical.map((e) => e.toString()).toList(),
+    );
+    await prefs.setInt('p90x3_current_makeup_index', currentMakeupIndex);
   }
 
   Future<void> _exportBackup() async {
@@ -379,8 +462,9 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
   }
 
   void _markDayComplete(int day) {
+    final wasAlreadyComplete = completedDays.contains(day);
     setState(() {
-      if (completedDays.contains(day)) {
+      if (wasAlreadyComplete) {
         completedDays.remove(day);
       } else {
         completedDays.add(day);
@@ -391,6 +475,13 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       }
     });
     _saveProgress();
+
+    // Trigger celebration when Day 90 is marked complete for the first time
+    if (!wasAlreadyComplete && day == 90 && !_celebrationShown) {
+      _celebrationShown = true;
+      _saveProgress();
+      Future.microtask(() => _showCelebration());
+    }
   }
 
   void _goToPreviousDay() {
@@ -869,11 +960,1352 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     );
   }
 
+  // ==================== COMPLETION FEATURES ====================
+
+  void _showCelebration() {
+    if (!mounted) return;
+    final completedCount = completedDays.length;
+    final abCount = completedAbRipper.length;
+    final ellipCount = completedElliptical.length;
+    final totalWorkouts = completedCount + abCount + ellipCount;
+    final completionPercent = (completedCount / 90 * 100).toStringAsFixed(1);
+    final missedDays = <int>[];
+    for (int i = 1; i <= 90; i++) {
+      if (!completedDays.contains(i)) missedDays.add(i);
+    }
+
+    String duration = '';
+    if (programStartDate != null) {
+      final days = DateTime.now().difference(programStartDate!).inDays;
+      duration = '$days days';
+    }
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => Dialog.fullscreen(
+        child: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xFF667eea),
+                Color(0xFF764ba2),
+                Color(0xFFf093fb),
+                Color(0xFFf5576c),
+              ],
+              stops: [0.0, 0.35, 0.65, 1.0],
+            ),
+          ),
+          child: SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                children: [
+                  const SizedBox(height: 16),
+                  // Close button
+                  Align(
+                    alignment: Alignment.topRight,
+                    child: IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white70, size: 28),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ),
+                  // Trophy with belt color
+                  Container(
+                    width: 120,
+                    height: 120,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: _getBeltColor(), width: 4),
+                      boxShadow: [
+                        BoxShadow(
+                          color: _getBeltColor().withOpacity(0.5),
+                          blurRadius: 30,
+                          spreadRadius: 5,
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.emoji_events_rounded,
+                      size: 64,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  const Text(
+                    'CONGRATULATIONS!',
+                    style: TextStyle(
+                      fontSize: 32,
+                      fontWeight: FontWeight.w900,
+                      color: Colors.white,
+                      letterSpacing: 3,
+                      shadows: [
+                        Shadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 4)),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'You completed P90X3 ${selectedProgram ?? ""}!',
+                    style: const TextStyle(
+                      fontSize: 20,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 32),
+                  // Stats cards
+                  _celebrationStatCard(Icons.calendar_today, 'Days Completed', '$completedCount / 90'),
+                  const SizedBox(height: 12),
+                  _celebrationStatCard(Icons.sports_martial_arts, 'Ab Ripper Sessions', '$abCount'),
+                  const SizedBox(height: 12),
+                  _celebrationStatCard(Icons.directions_run, 'Elliptical Sessions', '$ellipCount'),
+                  const SizedBox(height: 12),
+                  _celebrationStatCard(Icons.fitness_center, 'Total Workouts', '$totalWorkouts'),
+                  const SizedBox(height: 12),
+                  if (duration.isNotEmpty)
+                    _celebrationStatCard(Icons.timer, 'Program Duration', duration),
+                  if (duration.isNotEmpty) const SizedBox(height: 12),
+                  _celebrationStatCard(Icons.percent, 'Completion', '$completionPercent%'),
+                  const SizedBox(height: 12),
+                  _celebrationStatCard(Icons.military_tech, 'Belt Earned', _beltName),
+                  const SizedBox(height: 32),
+                  // Action buttons
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _exportCompletionStats();
+                      },
+                      icon: const Icon(Icons.download_rounded),
+                      label: const Text('Download Stats', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        foregroundColor: const Color(0xFF764ba2),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _showWhatsNext();
+                      },
+                      icon: const Icon(Icons.arrow_forward_rounded),
+                      label: const Text("What's Next?", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white.withOpacity(0.2),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        side: const BorderSide(color: Colors.white54),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _celebrationStatCard(IconData icon, String label, String value) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white24),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: Colors.white70, size: 24),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Text(label, style: const TextStyle(color: Colors.white70, fontSize: 14)),
+          ),
+          Text(
+            value,
+            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _exportCompletionStats() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final completedCount = completedDays.length;
+      final missedDays = <int>[];
+      for (int i = 1; i <= 90; i++) {
+        if (!completedDays.contains(i)) missedDays.add(i);
+      }
+
+      final backupData = {
+        'version': 1,
+        'exportDate': DateTime.now().toIso8601String(),
+        'p90x3_program': prefs.getString('p90x3_program'),
+        'p90x3_current_day': prefs.getInt('p90x3_current_day'),
+        'p90x3_completed': prefs.getStringList('p90x3_completed'),
+        'p90x3_completed_ab': prefs.getStringList('p90x3_completed_ab'),
+        'p90x3_ab_ripper': prefs.getStringList('p90x3_ab_ripper'),
+        'p90x3_completed_elliptical': prefs.getStringList('p90x3_completed_elliptical'),
+        'p90x3_align_rest_sunday': prefs.getBool('p90x3_align_rest_sunday'),
+        'p90x3_start_date': prefs.getString('p90x3_start_date'),
+        'p90x3_weights': prefs.getString('p90x3_weights'),
+        'completion_summary': {
+          'program': selectedProgram ?? '',
+          'start_date': programStartDate?.toIso8601String().split('T')[0] ?? '',
+          'end_date': DateTime.now().toIso8601String().split('T')[0],
+          'days_completed': completedCount,
+          'days_total': 90,
+          'completion_percent': double.parse((completedCount / 90 * 100).toStringAsFixed(1)),
+          'ab_ripper_sessions': completedAbRipper.length,
+          'elliptical_sessions': completedElliptical.length,
+          'total_workouts': completedCount + completedAbRipper.length + completedElliptical.length,
+          'belt_earned': _beltName,
+          'weights_logged': workoutWeights.map((k, v) => MapEntry(k.toString(), v)),
+          'missed_days': missedDays,
+        },
+      };
+
+      final jsonStr = const JsonEncoder.withIndent('  ').convert(backupData);
+      final downloadsDir = Directory('/storage/emulated/0/Download');
+      final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+      final program = (selectedProgram ?? 'unknown').toLowerCase();
+      final file = File('${downloadsDir.path}/excervids_completion_${program}_$timestamp.json');
+      await file.writeAsString(jsonStr);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Completion report saved to: ${file.path}'),
+            backgroundColor: P90X3Colors.success,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Export failed: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // ==================== MAKEUP WEEK FEATURES ====================
+
+  List<Map<String, dynamic>> _generateMakeupSchedule() {
+    if (selectedProgram == null) return [];
+
+    // Find all missed non-rest days
+    final missedWorkouts = <Map<String, dynamic>>[];
+    for (int day = 1; day <= 90; day++) {
+      if (!completedDays.contains(day)) {
+        final workout = P90X3Schedule.getWorkoutForDay(selectedProgram!, day);
+        // Skip rest/Dynamix days
+        if (workout.contains('Rest') || workout == 'Dynamix') continue;
+        final hasAbRipper = daysWithAbRipper.contains(day);
+        missedWorkouts.add({
+          'workout': workout,
+          'originalDay': day,
+          'hasAbRipper': hasAbRipper,
+        });
+      }
+    }
+
+    // Pack into slots starting at day 91, Mon-Sat with Sunday rest
+    final schedule = <Map<String, dynamic>>[];
+    int makeupDay = 91;
+    int slotInWeek = 0; // 0-5 = Mon-Sat, skip Sunday
+
+    for (final missed in missedWorkouts) {
+      // If we've filled 6 days (Mon-Sat), skip Sunday
+      if (slotInWeek >= 6) {
+        makeupDay++; // skip Sunday
+        slotInWeek = 0;
+      }
+      schedule.add({
+        'day': makeupDay,
+        'workout': missed['workout'],
+        'originalDay': missed['originalDay'],
+        'hasAbRipper': missed['hasAbRipper'],
+      });
+      makeupDay++;
+      slotInWeek++;
+    }
+
+    return schedule;
+  }
+
+  int _getMissedNonRestCount() {
+    if (selectedProgram == null) return 0;
+    int count = 0;
+    for (int day = 1; day <= 90; day++) {
+      if (!completedDays.contains(day)) {
+        final workout = P90X3Schedule.getWorkoutForDay(selectedProgram!, day);
+        if (!workout.contains('Rest') && workout != 'Dynamix') count++;
+      }
+    }
+    return count;
+  }
+
+  void _startMakeupWeek() {
+    final schedule = _generateMakeupSchedule();
+    if (schedule.isEmpty) return;
+    setState(() {
+      isMakeupWeek = true;
+      makeupSchedule = schedule;
+      completedMakeupDays.clear();
+      completedMakeupAbRipper.clear();
+      completedMakeupElliptical.clear();
+      currentMakeupIndex = 0;
+    });
+    _saveProgress();
+  }
+
+  void _exitMakeupWeek() {
+    setState(() {
+      isMakeupWeek = false;
+      makeupSchedule.clear();
+      completedMakeupDays.clear();
+      completedMakeupAbRipper.clear();
+      completedMakeupElliptical.clear();
+      currentMakeupIndex = 0;
+    });
+    _saveProgress();
+  }
+
+  void _markMakeupDayComplete(int makeupDay) {
+    setState(() {
+      if (completedMakeupDays.contains(makeupDay)) {
+        completedMakeupDays.remove(makeupDay);
+      } else {
+        completedMakeupDays.add(makeupDay);
+        _animationController.forward(from: 0);
+        // Advance to next incomplete makeup workout
+        _advanceMakeupIndex();
+      }
+    });
+    _saveProgress();
+
+    // Check if all makeup workouts are done
+    if (_allMakeupsDone()) {
+      Future.microtask(() => _showMakeupComplete());
+    }
+  }
+
+  void _toggleMakeupAbRipper(int makeupDay) {
+    setState(() {
+      if (completedMakeupAbRipper.contains(makeupDay)) {
+        completedMakeupAbRipper.remove(makeupDay);
+      } else {
+        completedMakeupAbRipper.add(makeupDay);
+        _animationController.forward(from: 0);
+      }
+    });
+    _saveProgress();
+  }
+
+  void _toggleMakeupElliptical(int makeupDay) {
+    setState(() {
+      if (completedMakeupElliptical.contains(makeupDay)) {
+        completedMakeupElliptical.remove(makeupDay);
+      } else {
+        completedMakeupElliptical.add(makeupDay);
+        _animationController.forward(from: 0);
+      }
+    });
+    _saveProgress();
+  }
+
+  void _advanceMakeupIndex() {
+    for (int i = 0; i < makeupSchedule.length; i++) {
+      if (!completedMakeupDays.contains(makeupSchedule[i]['day'])) {
+        currentMakeupIndex = i;
+        return;
+      }
+    }
+    currentMakeupIndex = makeupSchedule.length; // all done
+  }
+
+  bool _allMakeupsDone() {
+    return makeupSchedule.every((entry) => completedMakeupDays.contains(entry['day']));
+  }
+
+  void _showMakeupComplete() {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Row(
+          children: [
+            Icon(Icons.celebration_rounded, color: Colors.amber, size: 28),
+            SizedBox(width: 12),
+            Text('All Caught Up!', style: TextStyle(fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: Colors.green.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.check_circle_rounded, size: 64, color: Colors.green),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'You\'ve completed all your makeup workouts!',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 16),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '${makeupSchedule.length} workouts made up',
+              style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+            ),
+          ],
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _exitMakeupWeek();
+              _showWhatsNext();
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMakeupWeekView() {
+    final remainingCount = makeupSchedule.where(
+      (e) => !completedMakeupDays.contains(e['day']),
+    ).length;
+
+    // Get current workout
+    final currentEntry = currentMakeupIndex < makeupSchedule.length
+        ? makeupSchedule[currentMakeupIndex]
+        : null;
+
+    return Scaffold(
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.teal.shade50, Colors.white],
+          ),
+        ),
+        child: SafeArea(
+          child: SingleChildScrollView(
+            child: Column(
+              children: [
+                // Header
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [Colors.teal, Colors.teal.shade700],
+                          ),
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: const Icon(
+                          Icons.fitness_center_rounded,
+                          color: Colors.white,
+                          size: 28,
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Makeup Week',
+                              style: TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1.2,
+                              ),
+                            ),
+                            Text(
+                              '$remainingCount workouts remaining',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.grey[600],
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close_rounded),
+                        onPressed: () {
+                          showDialog(
+                            context: context,
+                            builder: (ctx) => AlertDialog(
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                              title: const Text('Exit Makeup Week?'),
+                              content: const Text('You can re-enter from the What\'s Next menu later.'),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx),
+                                  child: const Text('Cancel'),
+                                ),
+                                ElevatedButton(
+                                  onPressed: () {
+                                    Navigator.pop(ctx);
+                                    _exitMakeupWeek();
+                                  },
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.red,
+                                    foregroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  ),
+                                  child: const Text('Exit'),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+
+                // Progress bar
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Column(
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            '${completedMakeupDays.length} of ${makeupSchedule.length} complete',
+                            style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                          ),
+                          Text(
+                            makeupSchedule.isNotEmpty
+                                ? '${(completedMakeupDays.length / makeupSchedule.length * 100).toInt()}%'
+                                : '0%',
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.teal),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: LinearProgressIndicator(
+                          value: makeupSchedule.isNotEmpty
+                              ? completedMakeupDays.length / makeupSchedule.length
+                              : 0,
+                          minHeight: 8,
+                          backgroundColor: Colors.teal.withOpacity(0.1),
+                          valueColor: const AlwaysStoppedAnimation<Color>(Colors.teal),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 24),
+
+                // Current workout card
+                if (currentEntry != null) ...[
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            _getWorkoutColor(currentEntry['workout']),
+                            _getWorkoutColor(currentEntry['workout']).withOpacity(0.8),
+                          ],
+                        ),
+                        borderRadius: BorderRadius.circular(28),
+                        boxShadow: [
+                          BoxShadow(
+                            color: _getWorkoutColor(currentEntry['workout']).withOpacity(0.4),
+                            blurRadius: 24,
+                            offset: const Offset(0, 12),
+                          ),
+                        ],
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(28),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(14),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.25),
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                  child: Icon(
+                                    _getWorkoutIcon(currentEntry['workout']),
+                                    color: Colors.white,
+                                    size: 32,
+                                  ),
+                                ),
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'MAKEUP WORKOUT',
+                                        style: TextStyle(
+                                          color: Colors.white.withOpacity(0.9),
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600,
+                                          letterSpacing: 2,
+                                        ),
+                                      ),
+                                      Text(
+                                        'Originally Day ${currentEntry['originalDay']}',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                // Elliptical toggle
+                                Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.25),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: IconButton(
+                                    icon: Text(
+                                      completedMakeupElliptical.contains(currentEntry['day']) ? '⚡' : '⚪',
+                                      style: const TextStyle(fontSize: 20),
+                                    ),
+                                    onPressed: () => _toggleMakeupElliptical(currentEntry['day']),
+                                    tooltip: 'Elliptical',
+                                    padding: const EdgeInsets.all(8),
+                                    constraints: const BoxConstraints(),
+                                  ),
+                                ),
+                                if (completedMakeupDays.contains(currentEntry['day'])) ...[
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white.withOpacity(0.25),
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: const Icon(
+                                      Icons.check_circle_rounded,
+                                      color: Colors.white,
+                                      size: 24,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                            const SizedBox(height: 20),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    currentEntry['workout'],
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 32,
+                                      fontWeight: FontWeight.bold,
+                                      height: 1.1,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                ),
+                                if (currentEntry['hasAbRipper'] == true)
+                                  const Padding(
+                                    padding: EdgeInsets.only(left: 8),
+                                    child: Text(
+                                      '🥋',
+                                      style: TextStyle(fontSize: 32),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                            const SizedBox(height: 24),
+
+                            // Play buttons
+                            if (currentEntry['hasAbRipper'] == true) ...[
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: ElevatedButton.icon(
+                                      onPressed: () => _playVideo(currentEntry['workout'], currentEntry['originalDay']),
+                                      icon: const Icon(Icons.play_arrow_rounded, size: 24),
+                                      label: const Text('MAIN', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.white,
+                                        foregroundColor: _getWorkoutColor(currentEntry['workout']),
+                                        padding: const EdgeInsets.symmetric(vertical: 16),
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                        elevation: 0,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: ElevatedButton.icon(
+                                      onPressed: () => _playVideo('Ab Ripper X', currentEntry['originalDay']),
+                                      icon: const Text('🥋', style: TextStyle(fontSize: 20)),
+                                      label: const Text('AB RIPPER', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.white,
+                                        foregroundColor: Colors.orange,
+                                        padding: const EdgeInsets.symmetric(vertical: 16),
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                        elevation: 0,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              // Completion buttons
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: OutlinedButton.icon(
+                                      onPressed: () => _markMakeupDayComplete(currentEntry['day']),
+                                      icon: Icon(
+                                        completedMakeupDays.contains(currentEntry['day'])
+                                            ? Icons.check_circle_rounded
+                                            : Icons.check_circle_outline_rounded,
+                                      ),
+                                      label: Text(
+                                        completedMakeupDays.contains(currentEntry['day']) ? 'DONE' : 'MARK DONE',
+                                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                      ),
+                                      style: OutlinedButton.styleFrom(
+                                        foregroundColor: Colors.white,
+                                        side: BorderSide(
+                                          color: completedMakeupDays.contains(currentEntry['day'])
+                                              ? Colors.green
+                                              : Colors.white.withOpacity(0.5),
+                                          width: 2,
+                                        ),
+                                        backgroundColor: completedMakeupDays.contains(currentEntry['day'])
+                                            ? Colors.green.withOpacity(0.3)
+                                            : Colors.transparent,
+                                        padding: const EdgeInsets.symmetric(vertical: 12),
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: OutlinedButton.icon(
+                                      onPressed: () => _toggleMakeupAbRipper(currentEntry['day']),
+                                      icon: Icon(
+                                        completedMakeupAbRipper.contains(currentEntry['day'])
+                                            ? Icons.check_circle_rounded
+                                            : Icons.check_circle_outline_rounded,
+                                      ),
+                                      label: Text(
+                                        completedMakeupAbRipper.contains(currentEntry['day']) ? 'AB DONE' : 'AB MARK',
+                                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                      ),
+                                      style: OutlinedButton.styleFrom(
+                                        foregroundColor: Colors.white,
+                                        side: BorderSide(
+                                          color: completedMakeupAbRipper.contains(currentEntry['day'])
+                                              ? Colors.orange
+                                              : Colors.white.withOpacity(0.5),
+                                          width: 2,
+                                        ),
+                                        backgroundColor: completedMakeupAbRipper.contains(currentEntry['day'])
+                                            ? Colors.orange.withOpacity(0.3)
+                                            : Colors.transparent,
+                                        padding: const EdgeInsets.symmetric(vertical: 12),
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ] else ...[
+                              // Non-Ab Ripper day: single row
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: ElevatedButton.icon(
+                                      onPressed: () => _playVideo(currentEntry['workout'], currentEntry['originalDay']),
+                                      icon: const Icon(Icons.play_arrow_rounded, size: 28),
+                                      label: const Text('PLAY WORKOUT', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.white,
+                                        foregroundColor: _getWorkoutColor(currentEntry['workout']),
+                                        padding: const EdgeInsets.symmetric(vertical: 18),
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                        elevation: 0,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Container(
+                                    decoration: BoxDecoration(
+                                      color: Colors.white.withOpacity(0.25),
+                                      borderRadius: BorderRadius.circular(16),
+                                    ),
+                                    child: IconButton(
+                                      icon: Icon(
+                                        completedMakeupDays.contains(currentEntry['day'])
+                                            ? Icons.check_circle_rounded
+                                            : Icons.check_circle_outline_rounded,
+                                        size: 36,
+                                      ),
+                                      color: Colors.white,
+                                      onPressed: () => _markMakeupDayComplete(currentEntry['day']),
+                                      padding: const EdgeInsets.all(12),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ] else ...[
+                  // All done state (shouldn't normally show since dialog triggers)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Container(
+                      padding: const EdgeInsets.all(32),
+                      decoration: BoxDecoration(
+                        color: Colors.green.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(24),
+                      ),
+                      child: Column(
+                        children: [
+                          const Icon(Icons.check_circle_rounded, size: 64, color: Colors.green),
+                          const SizedBox(height: 16),
+                          const Text('All Caught Up!', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 8),
+                          ElevatedButton(
+                            onPressed: () {
+                              _exitMakeupWeek();
+                              _showWhatsNext();
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
+                            child: const Text('Continue'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+
+                const SizedBox(height: 24),
+
+                // Remaining makeup workouts list
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Makeup Schedule',
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 12),
+                      ...makeupSchedule.asMap().entries.map((entry) {
+                        final index = entry.key;
+                        final item = entry.value;
+                        final isDone = completedMakeupDays.contains(item['day']);
+                        final isCurrent = index == currentMakeupIndex;
+                        final workoutColor = _getWorkoutColor(item['workout']);
+
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: InkWell(
+                            onTap: () {
+                              setState(() {
+                                currentMakeupIndex = index;
+                              });
+                            },
+                            borderRadius: BorderRadius.circular(16),
+                            child: Container(
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: isDone
+                                    ? Colors.green.withOpacity(0.08)
+                                    : isCurrent
+                                        ? workoutColor.withOpacity(0.08)
+                                        : Colors.grey.withOpacity(0.04),
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(
+                                  color: isCurrent
+                                      ? workoutColor.withOpacity(0.4)
+                                      : isDone
+                                          ? Colors.green.withOpacity(0.2)
+                                          : Colors.grey.withOpacity(0.1),
+                                  width: isCurrent ? 2 : 1,
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    width: 40,
+                                    height: 40,
+                                    decoration: BoxDecoration(
+                                      color: isDone
+                                          ? Colors.green.withOpacity(0.15)
+                                          : workoutColor.withOpacity(0.15),
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Center(
+                                      child: isDone
+                                          ? const Icon(Icons.check_rounded, color: Colors.green, size: 20)
+                                          : Icon(_getWorkoutIcon(item['workout']), color: workoutColor, size: 20),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          item['workout'],
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.w600,
+                                            fontSize: 15,
+                                            decoration: isDone ? TextDecoration.lineThrough : null,
+                                            color: isDone ? Colors.grey : null,
+                                          ),
+                                        ),
+                                        Text(
+                                          'Originally Day ${item['originalDay']}',
+                                          style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  if (item['hasAbRipper'] == true)
+                                    const Padding(
+                                      padding: EdgeInsets.only(right: 8),
+                                      child: Text('🥋', style: TextStyle(fontSize: 16)),
+                                    ),
+                                  if (isCurrent && !isDone)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: workoutColor.withOpacity(0.15),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Text(
+                                        'NEXT',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                          color: workoutColor,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      }),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 24),
+
+                // Done with makeups button
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        _exitMakeupWeek();
+                        _showWhatsNext();
+                      },
+                      icon: const Icon(Icons.exit_to_app_rounded),
+                      label: const Text('Done with makeups'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.grey[700],
+                        side: BorderSide(color: Colors.grey[300]!),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      ),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 32),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ==================== END MAKEUP WEEK FEATURES ====================
+
+  void _showWhatsNext() {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Row(
+          children: [
+            Icon(Icons.explore_rounded, color: P90X3Colors.primary, size: 28),
+            SizedBox(width: 12),
+            Text("What's Next?", style: TextStyle(fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _whatsNextOption(
+              icon: Icons.replay_rounded,
+              color: Colors.blue,
+              title: 'Repeat ${selectedProgram ?? "Program"}',
+              subtitle: 'Reset progress, same program, new start date',
+              onTap: () {
+                Navigator.pop(context);
+                _restartProgram(selectedProgram!);
+              },
+            ),
+            const SizedBox(height: 8),
+            _whatsNextOption(
+              icon: Icons.swap_horiz_rounded,
+              color: Colors.orange,
+              title: 'Try a different P90X3',
+              subtitle: 'Switch to Classic, Lean, or Mass',
+              onTap: () {
+                Navigator.pop(context);
+                _switchProgram();
+              },
+            ),
+            const SizedBox(height: 8),
+            _whatsNextOption(
+              icon: Icons.hotel_rounded,
+              color: Colors.purple,
+              title: 'Take a rest week first',
+              subtitle: '7-day rest, then choose a program',
+              onTap: () {
+                Navigator.pop(context);
+                _startRestWeek();
+              },
+            ),
+            // Makeup missed workouts option (only if there are missed non-rest days)
+            if (isProgramComplete && _getMissedNonRestCount() > 0) ...[
+              const SizedBox(height: 8),
+              _whatsNextOption(
+                icon: Icons.fitness_center_rounded,
+                color: Colors.teal,
+                title: 'Make up missed workouts',
+                subtitle: 'Schedule ${_getMissedNonRestCount()} missed workouts into next week(s)',
+                onTap: () {
+                  Navigator.pop(context);
+                  _startMakeupWeek();
+                },
+              ),
+            ],
+            const SizedBox(height: 8),
+            _whatsNextOption(
+              icon: Icons.check_circle_outline,
+              color: Colors.green,
+              title: "I'm done for now",
+              subtitle: 'Keep completed program visible',
+              onTap: () => Navigator.pop(context),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _whatsNextOption({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.08),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: color.withOpacity(0.2)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(icon, color: color, size: 24),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: TextStyle(fontWeight: FontWeight.bold, color: color, fontSize: 15)),
+                    const SizedBox(height: 2),
+                    Text(subtitle, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                  ],
+                ),
+              ),
+              Icon(Icons.arrow_forward_ios_rounded, color: color, size: 16),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _restartProgram(String program) async {
+    // Auto-export completion backup before reset
+    await _exportCompletionStats();
+    setState(() {
+      completedDays.clear();
+      completedAbRipper.clear();
+      completedElliptical.clear();
+      workoutWeights.clear();
+      currentDay = 1;
+      displayDay = null;
+      _celebrationShown = false;
+      isRestWeek = false;
+      restWeekStartDate = null;
+      isMakeupWeek = false;
+      makeupSchedule.clear();
+      completedMakeupDays.clear();
+      completedMakeupAbRipper.clear();
+      completedMakeupElliptical.clear();
+      currentMakeupIndex = 0;
+      final today = DateTime.now();
+      programStartDate = DateTime(today.year, today.month, today.day);
+      // Re-enable Ab Ripper for all eligible days
+      daysWithAbRipper.clear();
+      final eligibleDays = P90X3Schedule.abRipperDays[program] ?? [];
+      daysWithAbRipper.addAll(eligibleDays);
+    });
+    _saveProgress();
+  }
+
+  Future<void> _switchProgram() async {
+    // Auto-export completion backup before reset
+    await _exportCompletionStats();
+    setState(() {
+      selectedProgram = null;
+      completedDays.clear();
+      completedAbRipper.clear();
+      completedElliptical.clear();
+      workoutWeights.clear();
+      currentDay = 1;
+      displayDay = null;
+      programStartDate = null;
+      _celebrationShown = false;
+      isRestWeek = false;
+      restWeekStartDate = null;
+      isMakeupWeek = false;
+      makeupSchedule.clear();
+      completedMakeupDays.clear();
+      completedMakeupAbRipper.clear();
+      completedMakeupElliptical.clear();
+      currentMakeupIndex = 0;
+    });
+    _saveProgress();
+  }
+
+  void _startRestWeek() {
+    setState(() {
+      isRestWeek = true;
+      restWeekStartDate = DateTime.now();
+    });
+    _saveProgress();
+  }
+
+  void _endRestWeek() {
+    setState(() {
+      isRestWeek = false;
+      restWeekStartDate = null;
+    });
+    _saveProgress();
+    // After rest week, go to program selection
+    Future.microtask(() => _switchProgram());
+  }
+
+  void _skipRestWeek() {
+    setState(() {
+      isRestWeek = false;
+      restWeekStartDate = null;
+    });
+    _saveProgress();
+    _showWhatsNext();
+  }
+
+  Widget _buildRestWeekView() {
+    final daysSinceRest = restWeekStartDate != null
+        ? DateTime.now().difference(restWeekStartDate!).inDays + 1
+        : 1;
+    final restDay = daysSinceRest.clamp(1, 7);
+    final messages = [
+      'Your body is recovering and growing stronger.',
+      'Rest is when the real gains happen.',
+      'Active recovery keeps you ready for what\'s next.',
+      'Halfway through your rest week!',
+      'Light stretching and walking are great today.',
+      'Almost there - your next program awaits!',
+      'Last rest day. Time to choose your next challenge!',
+    ];
+    final message = messages[(restDay - 1).clamp(0, 6)];
+
+    return Scaffold(
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.purple.shade50, Colors.white],
+          ),
+        ),
+        child: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      color: Colors.purple.withOpacity(0.1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.hotel_rounded, size: 64, color: Colors.purple),
+                  ),
+                  const SizedBox(height: 32),
+                  const Text(
+                    'Rest Week',
+                    style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Day $restDay of 7',
+                    style: TextStyle(fontSize: 24, color: Colors.purple[700], fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 8),
+                  // Progress bar
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: LinearProgressIndicator(
+                      value: restDay / 7,
+                      minHeight: 8,
+                      backgroundColor: Colors.purple.withOpacity(0.1),
+                      valueColor: const AlwaysStoppedAnimation<Color>(Colors.purple),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    message,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 16, color: Colors.grey[600], height: 1.5),
+                  ),
+                  const SizedBox(height: 48),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: _skipRestWeek,
+                      icon: const Icon(Icons.flash_on_rounded),
+                      label: const Text('Ready to go!', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.purple,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ==================== END COMPLETION FEATURES ====================
+
   Widget _buildCalendarView() {
     if (programStartDate == null || selectedProgram == null) return const SizedBox();
 
-    // Calculate how many months we need to show (at least 3 for 90 days)
-    final endDate = programStartDate!.add(const Duration(days: 89));
+    // Calculate how many months we need to show
+    final lastDay = isMakeupWeek && makeupSchedule.isNotEmpty
+        ? makeupSchedule.last['day'] as int
+        : 90;
+    final endDate = programStartDate!.add(Duration(days: lastDay - 1));
     final months = <DateTime>[];
 
     var currentMonth = DateTime(programStartDate!.year, programStartDate!.month, 1);
@@ -1008,7 +2440,15 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     // Day is 1-indexed, difference is 0-indexed
     final p90x3Day = difference + 1;
 
-    if (p90x3Day < 1 || p90x3Day > 90) return null;
+    if (p90x3Day < 1) return null;
+
+    // Allow days > 90 when in makeup mode
+    if (p90x3Day > 90) {
+      if (isMakeupWeek && makeupSchedule.any((e) => e['day'] == p90x3Day)) {
+        return p90x3Day;
+      }
+      return null;
+    }
 
     return p90x3Day;
   }
@@ -1044,16 +2484,40 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       );
     }
 
-    final workout = P90X3Schedule.getWorkoutForDay(selectedProgram!, p90x3Day);
-    final isCompleted = completedDays.contains(p90x3Day);
-    final isToday = p90x3Day == actualTodayP90X3Day; // Changed from currentDay
-    final isRest = workout.contains('Rest') || workout.contains('Dynamix');
-    final hasAbRipper = daysWithAbRipper.contains(p90x3Day);
-    final abCompleted = completedAbRipper.contains(p90x3Day);
-    final hasWeight = workoutWeights.containsKey(p90x3Day);
+    // Handle makeup days (> 90)
+    final String workout;
+    final bool isCompleted;
+    final bool isToday;
+    final bool isRest;
+    final bool hasAbRipper;
+    final bool abCompleted;
+    final bool hasWeight;
+
+    if (p90x3Day > 90) {
+      final makeupEntry = makeupSchedule.firstWhere(
+        (e) => e['day'] == p90x3Day,
+        orElse: () => <String, dynamic>{},
+      );
+      if (makeupEntry.isEmpty) return Container(height: 80);
+      workout = makeupEntry['workout'] as String;
+      isCompleted = completedMakeupDays.contains(p90x3Day);
+      isToday = false;
+      isRest = false;
+      hasAbRipper = makeupEntry['hasAbRipper'] == true;
+      abCompleted = completedMakeupAbRipper.contains(p90x3Day);
+      hasWeight = false;
+    } else {
+      workout = P90X3Schedule.getWorkoutForDay(selectedProgram!, p90x3Day);
+      isCompleted = completedDays.contains(p90x3Day);
+      isToday = p90x3Day == actualTodayP90X3Day;
+      isRest = workout.contains('Rest') || workout.contains('Dynamix');
+      hasAbRipper = daysWithAbRipper.contains(p90x3Day);
+      abCompleted = completedAbRipper.contains(p90x3Day);
+      hasWeight = workoutWeights.containsKey(p90x3Day);
+    }
 
     return InkWell(
-      onTap: () => _showDayDialog(p90x3Day, workout, isCompleted, isRest),
+      onTap: p90x3Day > 90 ? null : () => _showDayDialog(p90x3Day, workout, isCompleted, isRest),
       borderRadius: BorderRadius.circular(8),
       child: Container(
         height: 80,
@@ -1303,6 +2767,16 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
 
   @override
   Widget build(BuildContext context) {
+    // Show makeup week view if in makeup mode
+    if (isMakeupWeek) {
+      return _buildMakeupWeekView();
+    }
+
+    // Show rest week view if in rest week
+    if (isRestWeek) {
+      return _buildRestWeekView();
+    }
+
     if (selectedProgram == null) {
       return _buildProgramSelection();
     }
@@ -1391,7 +2865,13 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                           borderRadius: BorderRadius.circular(16),
                         ),
                         onSelected: (value) {
-                          if (value == 'reset') {
+                          if (value == 'view_stats') {
+                            _showCelebration();
+                          } else if (value == 'export_completion') {
+                            _exportCompletionStats();
+                          } else if (value == 'whats_next') {
+                            _showWhatsNext();
+                          } else if (value == 'reset') {
                             showDialog(
                               context: context,
                               builder: (context) => AlertDialog(
@@ -1461,6 +2941,39 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                               ],
                             ),
                           ),
+                          if (isProgramComplete)
+                            const PopupMenuItem(
+                              value: 'view_stats',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.emoji_events_rounded, size: 20, color: Colors.amber),
+                                  SizedBox(width: 12),
+                                  Text('View Completion Stats'),
+                                ],
+                              ),
+                            ),
+                          if (isProgramComplete)
+                            const PopupMenuItem(
+                              value: 'export_completion',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.assessment_rounded, size: 20, color: Colors.purple),
+                                  SizedBox(width: 12),
+                                  Text('Export Completion Report'),
+                                ],
+                              ),
+                            ),
+                          if (isProgramComplete)
+                            const PopupMenuItem(
+                              value: 'whats_next',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.explore_rounded, size: 20, color: P90X3Colors.primary),
+                                  SizedBox(width: 12),
+                                  Text('Start New Program'),
+                                ],
+                              ),
+                            ),
                           const PopupMenuItem(
                             value: 'export',
                             child: Row(
@@ -1535,6 +3048,55 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                 ),
 
                 const SizedBox(height: 12),
+
+                // Program Complete Banner
+                if (isProgramComplete)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF667eea), Color(0xFF764ba2)],
+                        ),
+                        borderRadius: BorderRadius.circular(16),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF764ba2).withOpacity(0.3),
+                            blurRadius: 12,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.emoji_events_rounded, color: Colors.amber, size: 28),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Program Complete!',
+                                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                                ),
+                                Text(
+                                  '$_beltName Belt Earned',
+                                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                                ),
+                              ],
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: _showWhatsNext,
+                            child: const Text("What's Next?", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                if (isProgramComplete) const SizedBox(height: 12),
 
                 // Workout Completion Counters
                 Padding(
