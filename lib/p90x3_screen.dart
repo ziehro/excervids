@@ -49,7 +49,20 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
   Set<int> completedMakeupElliptical = {};
   int currentMakeupIndex = 0;
 
+  // Program history
+  List<Map<String, dynamic>> programHistory = [];
+
+  // Hybrid/custom schedule
+  List<String>? hybridSchedule;
+
   bool get isProgramComplete => completedDays.contains(90);
+
+  String _getWorkout(int dayNumber) {
+    if (hybridSchedule != null && dayNumber >= 1 && dayNumber <= hybridSchedule!.length) {
+      return hybridSchedule![dayNumber - 1];
+    }
+    return P90X3Schedule.getWorkoutForDay(selectedProgram ?? 'Classic', dayNumber);
+  }
 
   String get _beltName {
     final count = completedDays.length;
@@ -127,6 +140,21 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       final completedMakeupEllip = prefs.getStringList('p90x3_completed_makeup_elliptical') ?? [];
       completedMakeupElliptical = completedMakeupEllip.map((e) => int.parse(e)).toSet();
       currentMakeupIndex = prefs.getInt('p90x3_current_makeup_index') ?? 0;
+
+      // Load program history
+      final historyJson = prefs.getString('p90x3_program_history');
+      if (historyJson != null) {
+        final decoded = List<dynamic>.from(const JsonDecoder().convert(historyJson));
+        programHistory = decoded.map((e) => Map<String, dynamic>.from(e)).toList();
+      }
+
+      // Load hybrid schedule
+      final hybridJson = prefs.getString('p90x3_hybrid_schedule');
+      if (hybridJson != null) {
+        hybridSchedule = List<String>.from(const JsonDecoder().convert(hybridJson));
+      } else {
+        hybridSchedule = null;
+      }
     });
 
     // Check if rest week has expired
@@ -197,6 +225,20 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       completedMakeupElliptical.map((e) => e.toString()).toList(),
     );
     await prefs.setInt('p90x3_current_makeup_index', currentMakeupIndex);
+
+    // Save program history
+    if (programHistory.isNotEmpty) {
+      await prefs.setString('p90x3_program_history', const JsonEncoder().convert(programHistory));
+    } else {
+      await prefs.remove('p90x3_program_history');
+    }
+
+    // Save hybrid schedule
+    if (hybridSchedule != null) {
+      await prefs.setString('p90x3_hybrid_schedule', const JsonEncoder().convert(hybridSchedule));
+    } else {
+      await prefs.remove('p90x3_hybrid_schedule');
+    }
   }
 
   Future<void> _exportBackup() async {
@@ -1219,7 +1261,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     final missedWorkouts = <Map<String, dynamic>>[];
     for (int day = 1; day <= 90; day++) {
       if (!completedDays.contains(day)) {
-        final workout = P90X3Schedule.getWorkoutForDay(selectedProgram!, day);
+        final workout = _getWorkout(day);
         // Skip rest/Dynamix days
         if (workout.contains('Rest') || workout == 'Dynamix') continue;
         final hasAbRipper = daysWithAbRipper.contains(day);
@@ -1260,7 +1302,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     int count = 0;
     for (int day = 1; day <= 90; day++) {
       if (!completedDays.contains(day)) {
-        final workout = P90X3Schedule.getWorkoutForDay(selectedProgram!, day);
+        final workout = _getWorkout(day);
         if (!workout.contains('Rest') && workout != 'Dynamix') count++;
       }
     }
@@ -2064,6 +2106,28 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
             ],
             const SizedBox(height: 8),
             _whatsNextOption(
+              icon: Icons.merge_rounded,
+              color: Colors.deepPurple,
+              title: 'Create Hybrid Program',
+              subtitle: 'Mix workouts from Classic, Lean & Mass',
+              onTap: () {
+                Navigator.pop(context);
+                _showCombineRoutines();
+              },
+            ),
+            const SizedBox(height: 8),
+            _whatsNextOption(
+              icon: Icons.history_rounded,
+              color: Colors.blueGrey,
+              title: 'View Past Programs',
+              subtitle: 'See your workout history',
+              onTap: () {
+                Navigator.pop(context);
+                _showProgramHistory();
+              },
+            ),
+            const SizedBox(height: 8),
+            _whatsNextOption(
               icon: Icons.check_circle_outline,
               color: Colors.green,
               title: "I'm done for now",
@@ -2124,14 +2188,361 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     );
   }
 
+  void _showProgramHistory() {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Row(
+          children: [
+            Icon(Icons.history_rounded, color: P90X3Colors.primary, size: 28),
+            SizedBox(width: 12),
+            Text('Program History', style: TextStyle(fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: programHistory.isEmpty
+            ? const Padding(
+                padding: EdgeInsets.symmetric(vertical: 16),
+                child: Text(
+                  'No completed programs yet.\nYour past programs will appear here when you finish or switch programs.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey),
+                ),
+              )
+            : SizedBox(
+                width: double.maxFinite,
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: programHistory.length,
+                  itemBuilder: (context, index) {
+                    final entry = programHistory[index];
+                    final startDate = DateTime.parse(entry['startDate']);
+                    final endDate = DateTime.parse(entry['endDate']);
+                    final daysCompleted = entry['daysCompleted'] as int;
+                    final abSessions = entry['abRipperSessions'] as int;
+                    final cardioSessions = entry['ellipticalSessions'] as int;
+                    final belt = entry['beltEarned'] as String;
+                    final pct = (daysCompleted / 90 * 100).toStringAsFixed(0);
+
+                    Color beltColor;
+                    switch (belt) {
+                      case 'Platinum':
+                        beltColor = const Color(0xFFF4F4F4);
+                        break;
+                      case 'Gold':
+                        beltColor = const Color(0xFFFFD700);
+                        break;
+                      case 'Silver':
+                        beltColor = const Color(0xFFC0C0C0);
+                        break;
+                      default:
+                        beltColor = const Color(0xFFCD7F32);
+                    }
+
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: P90X3Colors.primary.withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Text(
+                                    '${entry['program']}',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: P90X3Colors.primary,
+                                    ),
+                                  ),
+                                ),
+                                const Spacer(),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: beltColor.withOpacity(0.2),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: beltColor),
+                                  ),
+                                  child: Text(
+                                    '$belt 🥋',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      color: belt == 'Platinum' ? Colors.grey[700] : Colors.brown[700],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              '${startDate.month}/${startDate.day}/${startDate.year} — ${endDate.month}/${endDate.day}/${endDate.year}',
+                              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                _historyStatChip('💪 $daysCompleted/90', '$pct%'),
+                                const SizedBox(width: 8),
+                                _historyStatChip('🥋 $abSessions', 'abs'),
+                                const SizedBox(width: 8),
+                                _historyStatChip('⚡ $cardioSessions', 'cardio'),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+        actions: [
+          if (programHistory.isNotEmpty)
+            TextButton(
+              onPressed: () {
+                showDialog(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('Clear History?'),
+                    content: const Text('This will permanently remove all program history.'),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text('Cancel'),
+                      ),
+                      ElevatedButton(
+                        onPressed: () {
+                          setState(() => programHistory.clear());
+                          _saveProgress();
+                          Navigator.pop(ctx);
+                          Navigator.pop(context);
+                        },
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+                        child: const Text('Clear'),
+                      ),
+                    ],
+                  ),
+                );
+              },
+              child: const Text('Clear History', style: TextStyle(color: Colors.red)),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _historyStatChip(String value, String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.grey[100],
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        children: [
+          Text(value, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+          Text(label, style: TextStyle(fontSize: 9, color: Colors.grey[600])),
+        ],
+      ),
+    );
+  }
+
+  void _showCombineRoutines() {
+    if (!mounted) return;
+    // Build a list of all unique workouts from all 3 programs
+    final allPrograms = ['Classic', 'Lean', 'Mass'];
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        String block1 = selectedProgram ?? 'Classic';
+        String block2 = selectedProgram ?? 'Classic';
+        String block3 = selectedProgram ?? 'Classic';
+        return StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            title: const Row(
+              children: [
+                Icon(Icons.merge_rounded, color: Colors.deepPurple, size: 28),
+                SizedBox(width: 12),
+                Text('Create Hybrid', style: TextStyle(fontWeight: FontWeight.bold)),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Pick a program for each 4-week block:',
+                  style: TextStyle(fontSize: 13, color: Colors.grey),
+                ),
+                const SizedBox(height: 16),
+                _blockPicker('Block 1 (Wk 1-4)', block1, allPrograms, (v) {
+                  setDialogState(() => block1 = v);
+                }),
+                const SizedBox(height: 12),
+                _blockPicker('Block 2 (Wk 5-8)', block2, allPrograms, (v) {
+                  setDialogState(() => block2 = v);
+                }),
+                const SizedBox(height: 12),
+                _blockPicker('Block 3 (Wk 9-12+)', block3, allPrograms, (v) {
+                  setDialogState(() => block3 = v);
+                }),
+                const SizedBox(height: 16),
+                Text(
+                  'This creates a 90-day hybrid mixing $block1 → $block2 → $block3',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600], fontStyle: FontStyle.italic),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _startHybridProgram(block1, block2, block3);
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.deepPurple,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Start Hybrid'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _blockPicker(String label, String current, List<String> options, ValueChanged<String> onChanged) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 110,
+          child: Text(label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(
+              color: Colors.grey[100],
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: current,
+                isExpanded: true,
+                items: options.map((p) => DropdownMenuItem(value: p, child: Text(p, style: const TextStyle(fontSize: 13)))).toList(),
+                onChanged: (v) {
+                  if (v != null) onChanged(v);
+                },
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _startHybridProgram(String block1, String block2, String block3) {
+    // Save current program to history first
+    _saveToHistory();
+
+    // Build hybrid schedule: weeks 1-4 from block1, 5-8 from block2, 9-13 from block3
+    final schedule1 = P90X3Schedule.schedules[block1]!;
+    final schedule2 = P90X3Schedule.schedules[block2]!;
+    final schedule3 = P90X3Schedule.schedules[block3]!;
+
+    // Each block is ~28 days (4 weeks), last block gets remaining
+    final builtSchedule = <String>[];
+    for (int i = 0; i < 90; i++) {
+      if (i < 28) {
+        builtSchedule.add(schedule1[i]);
+      } else if (i < 56) {
+        builtSchedule.add(schedule2[i]);
+      } else {
+        builtSchedule.add(schedule3[i]);
+      }
+    }
+
+    // Store the hybrid info
+    setState(() {
+      selectedProgram = 'Hybrid ($block1/$block2/$block3)';
+      hybridSchedule = builtSchedule;
+      completedDays.clear();
+      completedAbRipper.clear();
+      completedElliptical.clear();
+      workoutWeights.clear();
+      currentDay = 1;
+      displayDay = null;
+      _celebrationShown = false;
+      isRestWeek = false;
+      restWeekStartDate = null;
+      isMakeupWeek = false;
+      makeupSchedule.clear();
+      completedMakeupDays.clear();
+      completedMakeupAbRipper.clear();
+      completedMakeupElliptical.clear();
+      currentMakeupIndex = 0;
+      final today = DateTime.now();
+      programStartDate = DateTime(today.year, today.month, today.day);
+      // Enable Ab Ripper using Classic pattern (same for all)
+      daysWithAbRipper.clear();
+      final eligibleDays = P90X3Schedule.abRipperDays['Classic'] ?? [];
+      daysWithAbRipper.addAll(eligibleDays);
+    });
+    _saveProgress();
+  }
+
+  void _saveToHistory() {
+    if (selectedProgram == null || programStartDate == null) return;
+    if (completedDays.isEmpty) return; // Don't save empty programs
+    programHistory.add({
+      'program': selectedProgram,
+      'startDate': programStartDate!.toIso8601String(),
+      'endDate': DateTime.now().toIso8601String(),
+      'daysCompleted': completedDays.length,
+      'abRipperSessions': completedAbRipper.length,
+      'ellipticalSessions': completedElliptical.length,
+      'completedDays': completedDays.toList(),
+      'completedAbRipper': completedAbRipper.toList(),
+      'completedElliptical': completedElliptical.toList(),
+      'weights': Map<String, dynamic>.from(workoutWeights.map((k, v) => MapEntry(k.toString(), v))),
+      'beltEarned': _beltName,
+    });
+  }
+
   Future<void> _restartProgram(String program) async {
     // Auto-export completion backup before reset
+    _saveToHistory();
     await _exportCompletionStats();
     setState(() {
       completedDays.clear();
       completedAbRipper.clear();
       completedElliptical.clear();
       workoutWeights.clear();
+      hybridSchedule = null;
       currentDay = 1;
       displayDay = null;
       _celebrationShown = false;
@@ -2155,6 +2566,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
 
   Future<void> _switchProgram() async {
     // Auto-export completion backup before reset
+    _saveToHistory();
     await _exportCompletionStats();
     setState(() {
       selectedProgram = null;
@@ -2162,6 +2574,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       completedAbRipper.clear();
       completedElliptical.clear();
       workoutWeights.clear();
+      hybridSchedule = null;
       currentDay = 1;
       displayDay = null;
       programStartDate = null;
@@ -2398,14 +2811,14 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
 
                     // Empty cell before month starts
                     if (cellIndex < startOffset) {
-                      return Expanded(child: Container(height: 80));
+                      return Expanded(child: Container(height: 90));
                     }
 
                     final dayNumber = cellIndex - startOffset + 1;
 
                     // Empty cell after month ends
                     if (dayNumber > daysInMonth) {
-                      return Expanded(child: Container(height: 80));
+                      return Expanded(child: Container(height: 90));
                     }
 
                     final date = DateTime(month.year, month.month, dayNumber);
@@ -2454,16 +2867,14 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
   }
 
   Widget _buildCalendarCell(DateTime date, int? p90x3Day) {
-    // Check if this is today's actual date
     final now = DateTime.now();
     final isActualToday = date.year == now.year &&
         date.month == now.month &&
         date.day == now.day;
 
     if (p90x3Day == null) {
-      // Just show the date if not part of program
       return Container(
-        height: 80,
+        height: 90,
         margin: const EdgeInsets.all(2),
         decoration: BoxDecoration(
           color: Colors.grey[50],
@@ -2475,16 +2886,12 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
         child: Center(
           child: Text(
             date.day.toString(),
-            style: TextStyle(
-              color: Colors.grey[400],
-              fontSize: 14,
-            ),
+            style: TextStyle(color: Colors.grey[400], fontSize: 14),
           ),
         ),
       );
     }
 
-    // Handle makeup days (> 90)
     final String workout;
     final bool isCompleted;
     final bool isToday;
@@ -2492,13 +2899,14 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     final bool hasAbRipper;
     final bool abCompleted;
     final bool hasWeight;
+    final bool cardioDone;
 
     if (p90x3Day > 90) {
       final makeupEntry = makeupSchedule.firstWhere(
         (e) => e['day'] == p90x3Day,
         orElse: () => <String, dynamic>{},
       );
-      if (makeupEntry.isEmpty) return Container(height: 80);
+      if (makeupEntry.isEmpty) return Container(height: 90);
       workout = makeupEntry['workout'] as String;
       isCompleted = completedMakeupDays.contains(p90x3Day);
       isToday = false;
@@ -2506,201 +2914,203 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       hasAbRipper = makeupEntry['hasAbRipper'] == true;
       abCompleted = completedMakeupAbRipper.contains(p90x3Day);
       hasWeight = false;
+      cardioDone = completedMakeupElliptical.contains(p90x3Day);
     } else {
-      workout = P90X3Schedule.getWorkoutForDay(selectedProgram!, p90x3Day);
+      workout = _getWorkout(p90x3Day);
       isCompleted = completedDays.contains(p90x3Day);
       isToday = p90x3Day == actualTodayP90X3Day;
       isRest = workout.contains('Rest') || workout.contains('Dynamix');
       hasAbRipper = daysWithAbRipper.contains(p90x3Day);
       abCompleted = completedAbRipper.contains(p90x3Day);
       hasWeight = workoutWeights.containsKey(p90x3Day);
+      cardioDone = completedElliptical.contains(p90x3Day);
     }
 
+    // Section tracking: main + cardio always, ab ripper on designated days
+    final int sectionCount = hasAbRipper ? 3 : 2;
+    int doneCount = 0;
+    if (isCompleted) doneCount++;
+    if (hasAbRipper && abCompleted) doneCount++;
+    if (cardioDone) doneCount++;
+    final bool allDone = doneCount == sectionCount;
+    // Don't show blue "today" indicator once main workout is done
+    final bool showAsToday = isToday && !isCompleted;
+
     return InkWell(
-      onTap: p90x3Day > 90 ? null : () => _showDayDialog(p90x3Day, workout, isCompleted, isRest),
+      onTap: p90x3Day > 90
+          ? null
+          : () => _showDayDialog(p90x3Day, workout, isCompleted, isRest),
       borderRadius: BorderRadius.circular(8),
       child: Container(
-        height: 80,
+        height: 90,
         margin: const EdgeInsets.all(2),
         decoration: BoxDecoration(
-          gradient: isCompleted
-              ? LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Colors.green.shade400,
-              Colors.green.shade600,
-            ],
-          )
-              : isToday
-              ? LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Colors.blue.shade400,
-              Colors.blue.shade600,
-            ],
-          )
-              : null,
-          color: isCompleted || isToday
-              ? null
-              : isRest
-              ? Colors.grey[100]
-              : Colors.grey[50],
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
             color: isActualToday
                 ? Colors.orange
-                : isToday
-                ? Colors.blue.shade300
-                : isCompleted
-                ? Colors.green.shade300
-                : Colors.grey.shade200,
-            width: isActualToday ? 3 : (isToday ? 2 : 1),
+                : showAsToday
+                    ? Colors.blue.shade300
+                    : allDone
+                        ? Colors.green.shade300
+                        : Colors.grey.shade200,
+            width: isActualToday ? 3 : (showAsToday ? 2 : 1),
           ),
         ),
-        child: Stack(
-          children: [
-            // Weight banner at the very top (if has weight)
-            if (hasWeight)
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 2),
-                  decoration: BoxDecoration(
-                    color: isCompleted || isToday
-                        ? Colors.white.withOpacity(0.25)
-                        : Colors.blue.withOpacity(0.9),
-                    borderRadius: const BorderRadius.only(
-                      topLeft: Radius.circular(8),
-                      topRight: Radius.circular(8),
-                    ),
-                  ),
-                  child: Center(
-                    child: Text(
-                      '${workoutWeights[p90x3Day]}lb',
-                      style: TextStyle(
-                        color: isCompleted || isToday ? Colors.white : Colors.white,
-                        fontSize: 9,
-                        fontWeight: FontWeight.bold,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(isActualToday ? 5 : 7),
+          child: Column(
+            children: [
+              // Date row at top (not a section, just info)
+              Container(
+                height: hasWeight ? 28 : 20,
+                color: allDone
+                    ? Colors.green.shade600
+                    : showAsToday
+                        ? Colors.blue.shade500
+                        : Colors.grey[50],
+                child: Stack(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(left: 4, right: 4, top: 2),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            date.day.toString(),
+                            style: TextStyle(
+                              color: allDone || showAsToday ? Colors.white : Colors.black87,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
+                            ),
+                          ),
+                          const Spacer(),
+                          if (allDone)
+                            Icon(Icons.check_rounded, color: Colors.white, size: 12),
+                          if (hasWeight)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: allDone || showAsToday
+                                    ? Colors.white.withOpacity(0.25)
+                                    : Colors.blue.withOpacity(0.8),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                '${workoutWeights[p90x3Day]}lb',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 8,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
                     ),
-                  ),
+                  ],
                 ),
               ),
+              // Cardio section (always present, topmost section)
+              _buildCellSection('⚡', cardioDone, allDone, showAsToday),
+              // Ab Ripper section (if applicable)
+              if (hasAbRipper)
+                _buildCellSection('🥋', abCompleted, allDone, showAsToday),
+              // Main workout section (bottom, shows name instead of icon)
+              _buildMainSection(
+                _abbreviateWorkout(workout),
+                isCompleted,
+                allDone,
+                showAsToday,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
-            // Main content
-            Padding(
-              padding: EdgeInsets.only(
-                top: hasWeight ? 18 : 4,
-                left: 4,
-                right: 4,
-                bottom: 4,
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Calendar date
-                  Text(
-                    date.day.toString(),
-                    style: TextStyle(
-                      color: isCompleted || isToday ? Colors.white : Colors.black87,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
-                  ),
-                  // Removed D1, D2, etc.
-                  const Spacer(),
-                  // Workout name (abbreviated)
-                  Text(
-                    _abbreviateWorkout(workout),
-                    style: TextStyle(
-                      color: isCompleted || isToday
-                          ? Colors.white.withOpacity(0.9)
-                          : Colors.grey[700],
-                      fontSize: 9,
-                      fontWeight: FontWeight.w600,
-                    ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ],
-              ),
+  Widget _buildCellSection(String emoji, bool done, bool allDone, bool isToday) {
+    Color bgColor;
+    if (allDone) {
+      bgColor = Colors.green.shade500;
+    } else if (done) {
+      bgColor = Colors.green.shade500;
+    } else if (isToday) {
+      bgColor = Colors.blue.shade800.withOpacity(0.3);
+    } else {
+      bgColor = Colors.grey.shade100;
+    }
+    return Expanded(
+      child: Container(
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: bgColor,
+          border: Border(
+            top: BorderSide(
+              color: allDone
+                  ? Colors.green.shade400.withOpacity(0.4)
+                  : isToday
+                      ? Colors.blue.shade300.withOpacity(0.2)
+                      : Colors.grey.shade200,
+              width: 0.5,
             ),
+          ),
+        ),
+        child: Center(
+          child: Opacity(
+            opacity: done ? 1.0 : 0.25,
+            child: Text(emoji, style: const TextStyle(fontSize: 11)),
+          ),
+        ),
+      ),
+    );
+  }
 
-            // Ab Ripper completed belt (horizontal squeeze effect)
-            if (abCompleted)
-              Positioned.fill(
-                child: CustomPaint(
-                  painter: HorizontalBeltPainter(
-                    color: _getBeltColor(),
-                    strokeWidth: 8,
-                  ),
-                ),
-              ),
-
-            // Completed checkmark (only if no weight)
-            if (isCompleted && !hasWeight)
-              Positioned(
-                top: 2,
-                right: 2,
-                child: Container(
-                  padding: const EdgeInsets.all(1),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.3),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.check_rounded,
-                    color: Colors.white,
-                    size: 12,
-                  ),
-                ),
-              ),
-
-            // Ab Ripper scheduled indicator (belt emoji on the right side of belt)
-            if (hasAbRipper)
-              Positioned(
-                top: 33, // Position it near the belt
-                right: 4,
-                child: Text(
-                  '🥋',
-                  style: TextStyle(
-                    fontSize: 12, // Slightly bigger
-                    shadows: [
-                      Shadow(
-                        color: Colors.black.withOpacity(0.3),
-                        offset: const Offset(0, 1),
-                        blurRadius: 2,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            // Add this after the Ab Ripper belt emoji section:
-
-// Elliptical completed indicator (on left side of belt)
-            if (completedElliptical.contains(p90x3Day))
-              Positioned(
-                top: 33, // Same position as karate emoji
-                left: 4,
-                child: Text(
-                  '⚡',
-                  style: TextStyle(
-                    fontSize: 12,
-                    shadows: [
-                      Shadow(
-                        color: Colors.black.withOpacity(0.3),
-                        offset: const Offset(0, 1),
-                        blurRadius: 2,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-          ],
+  Widget _buildMainSection(String name, bool done, bool allDone, bool isToday) {
+    Color bgColor;
+    if (allDone) {
+      bgColor = Colors.green.shade700;
+    } else if (done) {
+      bgColor = Colors.green.shade600;
+    } else if (isToday) {
+      bgColor = Colors.blue.shade900.withOpacity(0.35);
+    } else {
+      bgColor = Colors.grey.shade200;
+    }
+    return Expanded(
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 3),
+        decoration: BoxDecoration(
+          color: bgColor,
+          border: Border(
+            top: BorderSide(
+              color: allDone
+                  ? Colors.green.shade400.withOpacity(0.4)
+                  : isToday
+                      ? Colors.blue.shade300.withOpacity(0.2)
+                      : Colors.grey.shade200,
+              width: 0.5,
+            ),
+          ),
+        ),
+        child: Center(
+          child: Text(
+            name,
+            style: TextStyle(
+              color: done || allDone
+                  ? Colors.white
+                  : isToday
+                      ? Colors.white.withOpacity(0.7)
+                      : Colors.grey[800],
+              fontSize: 8,
+              fontWeight: FontWeight.w700,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+          ),
         ),
       ),
     );
@@ -2783,7 +3193,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
 
     // Use displayDay if set, otherwise use actual today
     final currentDisplayDay = displayDay ?? actualTodayP90X3Day;
-    final todayWorkout = P90X3Schedule.getWorkoutForDay(selectedProgram!, currentDisplayDay);
+    final todayWorkout = _getWorkout(currentDisplayDay);
     final completedCount = completedDays.length;
     final progressPercent = completedCount / 90;
     final canHaveAbRipper = P90X3Schedule.canHaveAbRipper(selectedProgram!, currentDisplayDay);
@@ -2928,6 +3338,10 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                             _exportBackup();
                           } else if (value == 'import') {
                             _importBackup();
+                          } else if (value == 'history') {
+                            _showProgramHistory();
+                          } else if (value == 'hybrid') {
+                            _showCombineRoutines();
                           }
                         },
                         itemBuilder: (context) => [
@@ -2974,6 +3388,26 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                 ],
                               ),
                             ),
+                          const PopupMenuItem(
+                            value: 'history',
+                            child: Row(
+                              children: [
+                                Icon(Icons.history_rounded, size: 20, color: Colors.deepPurple),
+                                SizedBox(width: 12),
+                                Text('Program History'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'hybrid',
+                            child: Row(
+                              children: [
+                                Icon(Icons.merge_rounded, size: 20, color: Colors.deepPurple),
+                                SizedBox(width: 12),
+                                Text('Create Hybrid Program'),
+                              ],
+                            ),
+                          ),
                           const PopupMenuItem(
                             value: 'export',
                             child: Row(
