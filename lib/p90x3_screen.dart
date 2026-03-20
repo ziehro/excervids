@@ -157,6 +157,14 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       }
     });
 
+    // Backfill: if program is complete but not in history, add it
+    if (isProgramComplete && programHistory.every((h) =>
+        h['startDate'] != programStartDate?.toIso8601String() ||
+        h['program'] != selectedProgram)) {
+      _saveToHistory();
+      _saveProgress();
+    }
+
     // Check if rest week has expired
     if (isRestWeek && restWeekStartDate != null) {
       final daysSinceRest = DateTime.now().difference(restWeekStartDate!).inDays;
@@ -521,6 +529,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     // Trigger celebration when Day 90 is marked complete for the first time
     if (!wasAlreadyComplete && day == 90 && !_celebrationShown) {
       _celebrationShown = true;
+      _saveToHistory();
       _saveProgress();
       Future.microtask(() => _showCelebration());
     }
