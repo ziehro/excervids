@@ -51,6 +51,8 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
 
   // Program history
   List<Map<String, dynamic>> programHistory = [];
+  bool showHistoryOverlay = true;
+  bool historyDetailExpanded = false;
 
   // Hybrid/custom schedule
   List<String>? hybridSchedule;
@@ -147,6 +149,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
         final decoded = List<dynamic>.from(const JsonDecoder().convert(historyJson));
         programHistory = decoded.map((e) => Map<String, dynamic>.from(e)).toList();
       }
+      showHistoryOverlay = prefs.getBool('p90x3_show_history_overlay') ?? true;
 
       // Load hybrid schedule
       final hybridJson = prefs.getString('p90x3_hybrid_schedule');
@@ -155,7 +158,14 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       } else {
         hybridSchedule = null;
       }
+
+      // Auto-seed on truly fresh install (no program AND no history)
+      if (selectedProgram == null && programHistory.isEmpty && completedDays.isEmpty) {
+        _applySeedData();
+      }
     });
+
+    _saveProgress();
 
     // Backfill: if program is complete but not in history, add it
     if (isProgramComplete && programHistory.every((h) =>
@@ -172,6 +182,38 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
         // Rest week is over, prompt program selection
         _endRestWeek();
       }
+    }
+  }
+
+  void _applySeedData() {
+    // Restore active Mass round (started Mar 16, 2026)
+    selectedProgram = 'Mass';
+    currentDay = 3;
+    completedDays = {5,7,8,9,11,17,16,21,22,23,25,14,27,28,30};
+    daysWithAbRipper = {1,3,5,8,10,12,15,17,19,22,24,26,29,31,33,36,38,40,43,45,47,50,52,54,57,59,61,64,66,68,71,73,75,78,80,82,85,87,89};
+    completedElliptical = {3,5,7,8,9,10,11,18,19,20,22,21,23,24,25,26,27,28,29,30};
+    alignRestToSunday = true;
+    programStartDate = DateTime.parse('2026-03-16T00:00:00.000');
+    completedAbRipper = {3,8,10,17,19,26,29};
+
+    // Restore Classic history
+    final classicStartDate = '2025-12-15T10:28:19.874779';
+    final hasClassicHistory = programHistory.any((h) =>
+        h['program'] == 'Classic' && h['startDate'] == classicStartDate);
+    if (!hasClassicHistory) {
+      programHistory.add({
+        'program': 'Classic',
+        'startDate': classicStartDate,
+        'endDate': '2026-03-15T21:44:53.947403',
+        'daysCompleted': 82,
+        'abRipperSessions': 37,
+        'ellipticalSessions': 85,
+        'completedDays': [5,4,1,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,34,35,36,37,38,39,40,41,43,42,44,45,47,49,48,50,52,53,54,55,56,57,58,59,60,61,62,63,65,66,67,68,69,70,71,72,73,75,76,78,79,77,80,81,82,83,46,84,85,86,74,90],
+        'completedAbRipper': [5,1,8,10,12,15,17,19,22,24,26,29,33,36,38,40,43,45,47,50,52,54,57,59,61,64,66,68,71,73,75,78,80,82,85,87,89],
+        'completedElliptical': [15,9,8,1,2,3,4,5,6,7,10,11,12,13,14,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,33,34,35,36,37,38,39,40,41,43,42,44,45,47,46,48,49,50,52,53,54,55,51,57,58,59,60,62,61,64,65,67,68,69,70,71,72,73,74,75,76,78,79,77,80,81,82,83,84,85,86,87,88,89,90],
+        'weights': {'11': '15', '12': '7.5', '15': '25,15', '18': '17.5', '54': '10', '71': '20'},
+        'beltEarned': 'Platinum',
+      });
     }
   }
 
@@ -240,6 +282,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     } else {
       await prefs.remove('p90x3_program_history');
     }
+    await prefs.setBool('p90x3_show_history_overlay', showHistoryOverlay);
 
     // Save hybrid schedule
     if (hybridSchedule != null) {
@@ -294,58 +337,113 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     }
   }
 
+  Future<File?> _pickBackupFile() async {
+    final downloadsDir = Directory('/storage/emulated/0/Download');
+    final files = await downloadsDir.list().toList();
+    final backupFiles = files
+        .whereType<File>()
+        .where((f) => (f.path.contains('excervids_backup') || f.path.contains('excervids_completion')) && f.path.endsWith('.json'))
+        .toList();
+
+    if (backupFiles.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No backup files found in Downloads folder'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return null;
+    }
+
+    backupFiles.sort((a, b) => b.path.compareTo(a.path));
+
+    if (!mounted) return null;
+    return showDialog<File>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.restore, color: P90X3Colors.primary),
+            SizedBox(width: 12),
+            Text('Select Backup'),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: backupFiles.length,
+            itemBuilder: (context, index) {
+              final file = backupFiles[index];
+              final name = file.path.split('/').last;
+              return ListTile(
+                leading: const Icon(Icons.file_present),
+                title: Text(name, style: const TextStyle(fontSize: 14)),
+                onTap: () => Navigator.pop(context, file),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _importBackup() async {
     try {
-      final downloadsDir = Directory('/storage/emulated/0/Download');
-      final files = await downloadsDir.list().toList();
-      final backupFiles = files
-          .whereType<File>()
-          .where((f) => f.path.contains('excervids_backup') && f.path.endsWith('.json'))
-          .toList();
+      final selectedFile = await _pickBackupFile();
+      if (selectedFile == null) return;
 
-      if (backupFiles.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('No backup files found in Downloads folder'),
-              backgroundColor: Colors.orange,
-            ),
-          );
-        }
-        return;
-      }
+      final jsonStr = await selectedFile.readAsString();
+      final backupData = Map<String, dynamic>.from(const JsonDecoder().convert(jsonStr));
 
-      // Sort by name (most recent first due to timestamp)
-      backupFiles.sort((a, b) => b.path.compareTo(a.path));
-
-      // Show file picker dialog
+      // Ask: restore as current or import as history?
       if (!mounted) return;
-      final selectedFile = await showDialog<File>(
+      final choice = await showDialog<String>(
         context: context,
         builder: (context) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Row(
+          title: const Text('Import Mode'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.restore, color: P90X3Colors.primary),
-              SizedBox(width: 12),
-              Text('Select Backup'),
+              Text(
+                'Program: ${backupData['p90x3_program'] ?? 'Unknown'}\n'
+                'Days completed: ${(backupData['p90x3_completed'] as List?)?.length ?? 0}/90\n'
+                'Start date: ${backupData['p90x3_start_date']?.toString().split('T')[0] ?? 'Unknown'}',
+                style: const TextStyle(fontSize: 14),
+              ),
+              const SizedBox(height: 20),
+              ListTile(
+                leading: const Icon(Icons.restore, color: P90X3Colors.primary),
+                title: const Text('Restore as Current'),
+                subtitle: const Text('Replace your current progress'),
+                onTap: () => Navigator.pop(context, 'restore'),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: BorderSide(color: Colors.grey.shade300),
+                ),
+              ),
+              const SizedBox(height: 12),
+              ListTile(
+                leading: const Icon(Icons.history, color: Color(0xFF64B5F6)),
+                title: const Text('Import as History'),
+                subtitle: const Text('Shows as light blue on calendar'),
+                onTap: () => Navigator.pop(context, 'history'),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: BorderSide(color: Colors.grey.shade300),
+                ),
+              ),
             ],
-          ),
-          content: SizedBox(
-            width: double.maxFinite,
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: backupFiles.length,
-              itemBuilder: (context, index) {
-                final file = backupFiles[index];
-                final name = file.path.split('/').last;
-                return ListTile(
-                  leading: const Icon(Icons.file_present),
-                  title: Text(name, style: const TextStyle(fontSize: 14)),
-                  onTap: () => Navigator.pop(context, file),
-                );
-              },
-            ),
           ),
           actions: [
             TextButton(
@@ -356,11 +454,14 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
         ),
       );
 
-      if (selectedFile == null) return;
+      if (choice == null) return;
 
-      final jsonStr = await selectedFile.readAsString();
-      final backupData = Map<String, dynamic>.from(const JsonDecoder().convert(jsonStr));
+      if (choice == 'history') {
+        await _importAsHistory(backupData);
+        return;
+      }
 
+      // Original restore logic
       final prefs = await SharedPreferences.getInstance();
 
       if (backupData['p90x3_program'] != null) {
@@ -410,6 +511,105 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
           ),
         );
       }
+    }
+  }
+
+  Future<void> _importAsHistory(Map<String, dynamic> backupData) async {
+    final program = backupData['p90x3_program'] as String?;
+    final startDateStr = backupData['p90x3_start_date'] as String?;
+    final completedList = backupData['p90x3_completed'] as List?;
+
+    if (program == null || startDateStr == null || completedList == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Backup file missing required data'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
+
+    final startDate = DateTime.parse(startDateStr);
+    final completed = completedList.map((e) => int.parse(e.toString())).toSet();
+    final completedAb = (backupData['p90x3_completed_ab'] as List?)
+        ?.map((e) => int.parse(e.toString())).toSet() ?? <int>{};
+    final completedEllip = (backupData['p90x3_completed_elliptical'] as List?)
+        ?.map((e) => int.parse(e.toString())).toSet() ?? <int>{};
+
+    // Parse weights
+    Map<String, dynamic> weights = {};
+    if (backupData['p90x3_weights'] != null) {
+      if (backupData['p90x3_weights'] is String) {
+        weights = Map<String, dynamic>.from(const JsonDecoder().convert(backupData['p90x3_weights']));
+      } else if (backupData['p90x3_weights'] is Map) {
+        weights = Map<String, dynamic>.from(backupData['p90x3_weights']);
+      }
+    }
+    // Also check completion_summary weights
+    if (weights.isEmpty && backupData['completion_summary'] != null) {
+      final summary = backupData['completion_summary'] as Map<String, dynamic>;
+      if (summary['weights_logged'] != null) {
+        weights = Map<String, dynamic>.from(summary['weights_logged']);
+      }
+    }
+
+    // Check for duplicate (same program + same start date)
+    final isDuplicate = programHistory.any((h) =>
+        h['program'] == program &&
+        h['startDate'] == startDate.toIso8601String());
+
+    if (isDuplicate) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('This round is already in your history'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
+    // Calculate belt
+    final count = completed.length;
+    String belt;
+    if (count >= 68) {
+      belt = 'Platinum';
+    } else if (count >= 45) {
+      belt = 'Gold';
+    } else if (count >= 23) {
+      belt = 'Silver';
+    } else {
+      belt = 'Bronze';
+    }
+
+    setState(() {
+      programHistory.add({
+        'program': program,
+        'startDate': startDate.toIso8601String(),
+        'endDate': backupData['exportDate'] ?? DateTime.now().toIso8601String(),
+        'daysCompleted': completed.length,
+        'abRipperSessions': completedAb.length,
+        'ellipticalSessions': completedEllip.length,
+        'completedDays': completed.toList(),
+        'completedAbRipper': completedAb.toList(),
+        'completedElliptical': completedEllip.toList(),
+        'weights': weights,
+        'beltEarned': belt,
+      });
+    });
+    await _saveProgress();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('$program round added to history (${completed.length}/90 days, $belt belt)'),
+          backgroundColor: const Color(0xFF64B5F6),
+          duration: const Duration(seconds: 3),
+        ),
+      );
     }
   }
 
@@ -2371,6 +2571,310 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     );
   }
 
+  Widget _buildHistoryDetailSection() {
+    if (!showHistoryOverlay || programHistory.isEmpty) return const SizedBox();
+
+    return Column(
+      children: programHistory.map((entry) {
+        final program = entry['program'] as String? ?? 'Unknown';
+        final startDateStr = entry['startDate'] as String?;
+        final endDateStr = entry['endDate'] as String?;
+        final daysCompleted = entry['daysCompleted'] as int? ?? 0;
+        final abSessions = entry['abRipperSessions'] as int? ?? 0;
+        final cardioSessions = entry['ellipticalSessions'] as int? ?? 0;
+        final belt = entry['beltEarned'] as String? ?? 'Bronze';
+        final completedDaysList = (entry['completedDays'] as List?)
+            ?.map((e) => e is int ? e : int.parse(e.toString()))
+            .toSet() ?? <int>{};
+        final completedAbList = (entry['completedAbRipper'] as List?)
+            ?.map((e) => e is int ? e : int.parse(e.toString()))
+            .toSet() ?? <int>{};
+        final completedEllipList = (entry['completedElliptical'] as List?)
+            ?.map((e) => e is int ? e : int.parse(e.toString()))
+            .toSet() ?? <int>{};
+        final weights = entry['weights'] as Map<String, dynamic>? ?? {};
+        final pct = (daysCompleted / 90 * 100).toStringAsFixed(0);
+
+        final startDate = startDateStr != null ? DateTime.parse(startDateStr) : null;
+        final endDate = endDateStr != null ? DateTime.parse(endDateStr) : null;
+
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFE3F2FD),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: const Color(0xFF64B5F6), width: 1.5),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF64B5F6).withOpacity(0.15),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              children: [
+                // Header
+                InkWell(
+                  onTap: () => setState(() => historyDetailExpanded = !historyDetailExpanded),
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.history_rounded, color: Color(0xFF1565C0), size: 22),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Previous: $program',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                                color: Color(0xFF1565C0),
+                              ),
+                            ),
+                            const Spacer(),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF64B5F6).withOpacity(0.3),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                '$belt 🥋',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF1565C0),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Icon(
+                              historyDetailExpanded ? Icons.expand_less : Icons.expand_more,
+                              color: const Color(0xFF1565C0),
+                            ),
+                          ],
+                        ),
+                        if (startDate != null && endDate != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(
+                              '${startDate.month}/${startDate.day}/${startDate.year} — ${endDate.month}/${endDate.day}/${endDate.year}',
+                              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                            ),
+                          ),
+                        const SizedBox(height: 12),
+                        // Stats row
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceAround,
+                          children: [
+                            _buildHistoryMiniStat('Days', '$daysCompleted/90', '$pct%', Colors.blue),
+                            _buildHistoryMiniStat('Ab Ripper', '$abSessions', 'sessions', Colors.red),
+                            _buildHistoryMiniStat('Cardio', '$cardioSessions', 'sessions', Colors.teal),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                // Expanded stats detail
+                if (historyDetailExpanded) ...[
+                  const Divider(height: 1, color: Color(0xFF64B5F6)),
+                  Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      children: [
+                        _buildHistoryStatRow('Completion', '$daysCompleted / 90 days ($pct%)'),
+                        _buildHistoryStatRow('Ab Ripper Sessions', '$abSessions'),
+                        _buildHistoryStatRow('Cardio Sessions', '$cardioSessions'),
+                        _buildHistoryStatRow('Belt Earned', belt),
+                        if (startDate != null)
+                          _buildHistoryStatRow('Started', '${startDate.month}/${startDate.day}/${startDate.year}'),
+                        if (endDate != null)
+                          _buildHistoryStatRow('Ended', '${endDate.month}/${endDate.day}/${endDate.year}'),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildHistoryMiniStat(String label, String value, String sub, Color color) {
+    return Column(
+      children: [
+        Text(
+          value,
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 18,
+            color: color,
+          ),
+        ),
+        Text(sub, style: TextStyle(fontSize: 10, color: Colors.grey[500])),
+        const SizedBox(height: 2),
+        Text(label, style: TextStyle(fontSize: 11, color: Colors.grey[700], fontWeight: FontWeight.w500)),
+      ],
+    );
+  }
+
+  Widget _buildHistoryStatRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(fontSize: 13, color: Color(0xFF1565C0), fontWeight: FontWeight.w500)),
+          Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF0D47A1))),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHistoryDayGrid(String program, Set<int> completed, Set<int> abDone, Set<int> elliDone, Map<String, dynamic> weights) {
+    // Build weeks (7 days per row)
+    final weeks = <List<int>>[];
+    for (int i = 1; i <= 90; i += 7) {
+      final week = <int>[];
+      for (int d = i; d < i + 7 && d <= 90; d++) {
+        week.add(d);
+      }
+      weeks.add(week);
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Legend
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Row(
+            children: [
+              _buildHistoryLegend(const Color(0xFF81C784), 'Done'),
+              const SizedBox(width: 12),
+              _buildHistoryLegend(const Color(0xFFE57373), 'Missed'),
+              const SizedBox(width: 12),
+              _buildHistoryLegend(const Color(0xFFFFB74D), 'Rest'),
+            ],
+          ),
+        ),
+        // Week rows
+        ...weeks.asMap().entries.map((weekEntry) {
+          final weekNum = weekEntry.key + 1;
+          final days = weekEntry.value;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (weekNum == 1 || weekNum == 5 || weekNum == 9 || weekNum == 13)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4, top: 4),
+                    child: Text(
+                      weekNum <= 4 ? 'Block 1' : weekNum <= 8 ? 'Block 2' : weekNum <= 12 ? 'Block 3' : 'Block 4',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1565C0),
+                      ),
+                    ),
+                  ),
+                Row(
+                  children: days.map((day) {
+                    final workout = P90X3Schedule.getWorkoutForDay(program, day);
+                    final isRest = workout.contains('Rest') || workout.contains('Dynamix');
+                    final isDone = completed.contains(day);
+                    final hasAb = abDone.contains(day);
+                    final hasElli = elliDone.contains(day);
+                    final weight = weights[day.toString()];
+
+                    Color bgColor;
+                    if (isRest) {
+                      bgColor = const Color(0xFFFFE0B2);
+                    } else if (isDone) {
+                      bgColor = const Color(0xFFC8E6C9);
+                    } else {
+                      bgColor = const Color(0xFFFFCDD2);
+                    }
+
+                    return Expanded(
+                      child: Tooltip(
+                        message: 'Day $day: $workout${isDone ? " ✓" : ""}${hasAb ? " +Ab" : ""}${hasElli ? " +Cardio" : ""}${weight != null ? " ${weight}lb" : ""}',
+                        child: Container(
+                          margin: const EdgeInsets.all(1),
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          decoration: BoxDecoration(
+                            color: bgColor,
+                            borderRadius: BorderRadius.circular(4),
+                            border: isDone && !isRest
+                                ? Border.all(color: const Color(0xFF4CAF50), width: 1)
+                                : null,
+                          ),
+                          child: Column(
+                            children: [
+                              Text(
+                                '$day',
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.bold,
+                                  color: isDone ? const Color(0xFF2E7D32) : isRest ? Colors.orange[800] : const Color(0xFFC62828),
+                                ),
+                              ),
+                              Text(
+                                _abbreviateWorkout(workout),
+                                style: const TextStyle(fontSize: 7),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              if (isDone) Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (hasElli) const Text('⚡', style: TextStyle(fontSize: 7)),
+                                  if (hasAb) const Text('🥋', style: TextStyle(fontSize: 7)),
+                                  if (weight != null) Text('💪', style: const TextStyle(fontSize: 7)),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  Widget _buildHistoryLegend(Color color, String label) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(3),
+          ),
+        ),
+        const SizedBox(width: 4),
+        Text(label, style: TextStyle(fontSize: 10, color: Colors.grey[600])),
+      ],
+    );
+  }
+
   void _showCombineRoutines() {
     if (!mounted) return;
     // Build a list of all unique workouts from all 3 programs
@@ -2720,6 +3224,45 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
 
   // ==================== END COMPLETION FEATURES ====================
 
+  /// Check if a calendar date was completed in any historical round.
+  /// Returns a map with history entry + day details, null otherwise.
+  Map<String, dynamic>? _getHistoryForDate(DateTime date) {
+    if (!showHistoryOverlay || programHistory.isEmpty) return null;
+    final normalizedDate = DateTime(date.year, date.month, date.day);
+
+    for (final history in programHistory) {
+      final startDateStr = history['startDate'] as String?;
+      if (startDateStr == null) continue;
+      final startDate = DateTime.parse(startDateStr);
+      final normalizedStart = DateTime(startDate.year, startDate.month, startDate.day);
+      final diff = normalizedDate.difference(normalizedStart).inDays;
+      final p90x3Day = diff + 1;
+      if (p90x3Day < 1 || p90x3Day > 90) continue;
+
+      final completedDaysList = history['completedDays'] as List?;
+      if (completedDaysList == null) continue;
+      final completed = completedDaysList.map((e) => e is int ? e : int.parse(e.toString())).toSet();
+      if (completed.contains(p90x3Day)) {
+        final program = history['program'] as String? ?? 'Classic';
+        final abSet = (history['completedAbRipper'] as List?)
+            ?.map((e) => e is int ? e : int.parse(e.toString())).toSet() ?? <int>{};
+        final elliSet = (history['completedElliptical'] as List?)
+            ?.map((e) => e is int ? e : int.parse(e.toString())).toSet() ?? <int>{};
+        final workout = P90X3Schedule.getWorkoutForDay(program, p90x3Day);
+        final hasAbRipper = P90X3Schedule.canHaveAbRipper(program, p90x3Day);
+        return {
+          ...history,
+          'p90x3Day': p90x3Day,
+          'workout': workout,
+          'hasAbRipper': hasAbRipper,
+          'abCompleted': abSet.contains(p90x3Day),
+          'cardioDone': elliSet.contains(p90x3Day),
+        };
+      }
+    }
+    return null;
+  }
+
   Widget _buildCalendarView() {
     if (programStartDate == null || selectedProgram == null) return const SizedBox();
 
@@ -2730,7 +3273,19 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     final endDate = programStartDate!.add(Duration(days: lastDay - 1));
     final months = <DateTime>[];
 
-    var currentMonth = DateTime(programStartDate!.year, programStartDate!.month, 1);
+    // Include historical round months if overlay is on
+    DateTime earliestStart = programStartDate!;
+    if (showHistoryOverlay && programHistory.isNotEmpty) {
+      for (final h in programHistory) {
+        final s = h['startDate'] as String?;
+        if (s != null) {
+          final d = DateTime.parse(s);
+          if (d.isBefore(earliestStart)) earliestStart = d;
+        }
+      }
+    }
+
+    var currentMonth = DateTime(earliestStart.year, earliestStart.month, 1);
     final lastMonth = DateTime(endDate.year, endDate.month, 1);
 
     while (currentMonth.isBefore(lastMonth) || currentMonth.isAtSameMomentAs(lastMonth)) {
@@ -2881,7 +3436,65 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
         date.month == now.month &&
         date.day == now.day;
 
+    // Check for historical completion on this date
+    final historyHit = _getHistoryForDate(date);
+
     if (p90x3Day == null) {
+      // Not in current program range — but might be a historical day
+      if (historyHit != null) {
+        final hWorkout = historyHit['workout'] as String? ?? '';
+        final hHasAb = historyHit['hasAbRipper'] as bool? ?? false;
+        final hAbDone = historyHit['abCompleted'] as bool? ?? false;
+        final hCardioDone = historyHit['cardioDone'] as bool? ?? false;
+
+        return Container(
+          height: 90,
+          margin: const EdgeInsets.all(2),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: isActualToday ? Colors.orange : const Color(0xFF64B5F6),
+              width: isActualToday ? 3 : 1,
+            ),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(isActualToday ? 5 : 7),
+            child: Column(
+              children: [
+                // Date header
+                Container(
+                  height: 20,
+                  color: const Color(0xFF42A5F5),
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 4, right: 4, top: 2),
+                    child: Row(
+                      children: [
+                        Text(
+                          date.day.toString(),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
+                        ),
+                        const Spacer(),
+                        const Icon(Icons.history, color: Colors.white, size: 10),
+                      ],
+                    ),
+                  ),
+                ),
+                // Cardio section
+                _buildHistoryCellSection('⚡', hCardioDone),
+                // Ab Ripper section (if applicable)
+                if (hHasAb)
+                  _buildHistoryCellSection('🥋', hAbDone),
+                // Main workout section
+                _buildHistoryMainSection(_abbreviateWorkout(hWorkout)),
+              ],
+            ),
+          ),
+        );
+      }
       return Container(
         height: 90,
         margin: const EdgeInsets.all(2),
@@ -3125,6 +3738,60 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     );
   }
 
+  Widget _buildHistoryCellSection(String emoji, bool done) {
+    return Expanded(
+      child: Container(
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: done ? const Color(0xFF42A5F5) : const Color(0xFFE3F2FD),
+          border: Border(
+            top: BorderSide(
+              color: const Color(0xFF90CAF9).withOpacity(0.4),
+              width: 0.5,
+            ),
+          ),
+        ),
+        child: Center(
+          child: Opacity(
+            opacity: done ? 1.0 : 0.25,
+            child: Text(emoji, style: const TextStyle(fontSize: 11)),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHistoryMainSection(String name) {
+    return Expanded(
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 3),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E88E5),
+          border: Border(
+            top: BorderSide(
+              color: const Color(0xFF90CAF9).withOpacity(0.4),
+              width: 0.5,
+            ),
+          ),
+        ),
+        child: Center(
+          child: Text(
+            name,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 8,
+              fontWeight: FontWeight.w700,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+          ),
+        ),
+      ),
+    );
+  }
+
   String _abbreviateWorkout(String workout) {
     // Abbreviate long workout names for calendar display
     final abbreviations = {
@@ -3347,6 +4014,22 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                             _exportBackup();
                           } else if (value == 'import') {
                             _importBackup();
+                          } else if (value == 'toggle_history_overlay') {
+                            setState(() {
+                              showHistoryOverlay = !showHistoryOverlay;
+                            });
+                            _saveProgress();
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(showHistoryOverlay
+                                    ? 'History overlay ON'
+                                    : 'History overlay OFF'),
+                                backgroundColor: showHistoryOverlay
+                                    ? const Color(0xFF64B5F6)
+                                    : Colors.grey,
+                                duration: const Duration(seconds: 1),
+                              ),
+                            );
                           } else if (value == 'history') {
                             _showProgramHistory();
                           } else if (value == 'hybrid') {
@@ -3404,6 +4087,22 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                 Icon(Icons.history_rounded, size: 20, color: Colors.deepPurple),
                                 SizedBox(width: 12),
                                 Text('Program History'),
+                              ],
+                            ),
+                          ),
+                          PopupMenuItem(
+                            value: 'toggle_history_overlay',
+                            child: Row(
+                              children: [
+                                Icon(
+                                  showHistoryOverlay ? Icons.visibility : Icons.visibility_off,
+                                  size: 20,
+                                  color: const Color(0xFF64B5F6),
+                                ),
+                                const SizedBox(width: 12),
+                                Text(showHistoryOverlay
+                                    ? 'Hide History on Calendar'
+                                    : 'Show History on Calendar'),
                               ],
                             ),
                           ),
@@ -3585,9 +4284,12 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                   ),
                 ),
 
-                const SizedBox(height: 24),
+                const SizedBox(height: 12),
 
-                // In the build method, update the Today's Workout Card section:
+                // Previous routine details (when history overlay is on)
+                _buildHistoryDetailSection(),
+
+                const SizedBox(height: 12),
 
 // Today's Workout Card
                 Padding(
@@ -4300,6 +5002,71 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                 child: ListView(
                   padding: const EdgeInsets.all(16),
                   children: [
+                    // One-time restore button for Chris's data
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 16),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [Colors.green.shade400, Colors.green.shade700],
+                        ),
+                        borderRadius: BorderRadius.circular(24),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.green.withOpacity(0.3),
+                            blurRadius: 12,
+                            offset: const Offset(0, 6),
+                          ),
+                        ],
+                      ),
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: () {
+                            setState(() {
+                              _applySeedData();
+                            });
+                            _saveProgress();
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Progress restored! Mass round + Classic history loaded.')),
+                            );
+                          },
+                          borderRadius: BorderRadius.circular(24),
+                          child: Padding(
+                            padding: const EdgeInsets.all(20),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.restore, size: 36, color: Colors.white),
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: const [
+                                      Text(
+                                        'Restore My Progress',
+                                        style: TextStyle(
+                                          fontSize: 20,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                      SizedBox(height: 4),
+                                      Text(
+                                        'Load Mass round + Classic history',
+                                        style: TextStyle(
+                                          fontSize: 14,
+                                          color: Colors.white70,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const Icon(Icons.arrow_forward_ios, color: Colors.white70),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                     _buildProgramCard(
                       'Classic',
                       'Balanced strength and cardio',
