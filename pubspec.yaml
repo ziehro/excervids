@@ -1,7 +1,7 @@
 name: ziehro
 description: ExcerVids - Simple video player
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.11+12
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

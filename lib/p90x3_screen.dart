@@ -53,11 +53,112 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
   List<Map<String, dynamic>> programHistory = [];
   bool showHistoryOverlay = true;
   bool historyDetailExpanded = false;
+  bool _allTimeExpanded = false;
 
   // Hybrid/custom schedule
   List<String>? hybridSchedule;
 
   bool get isProgramComplete => completedDays.contains(90);
+
+  // Each completed round gets its own color (round 1 = blue, 2 = purple, ...)
+  static const List<MaterialColor> _roundPalette = [
+    Colors.blue,
+    Colors.purple,
+    Colors.teal,
+    Colors.deepOrange,
+    Colors.pink,
+    Colors.indigo,
+    Colors.green,
+    Colors.brown,
+  ];
+  MaterialColor _roundColor(int index) =>
+      _roundPalette[index % _roundPalette.length];
+
+  // Historical totals (sums across every completed/archived round)
+  int get _historyDaysTotal => programHistory.fold<int>(
+      0, (s, h) => s + ((h['daysCompleted'] as int?) ?? 0));
+  int get _historyAbTotal => programHistory.fold<int>(
+      0, (s, h) => s + ((h['abRipperSessions'] as int?) ?? 0));
+  int get _historyCardioTotal => programHistory.fold<int>(
+      0, (s, h) => s + ((h['ellipticalSessions'] as int?) ?? 0));
+
+  // All-time totals = current round + makeup week + historical rounds.
+  // Skip the live round if it's already been archived into history (otherwise
+  // the finished round gets counted twice).
+  int get _allTimeDays => (_currentRoundArchived ? 0 : completedDays.length + completedMakeupDays.length) + _historyDaysTotal;
+  int get _allTimeAb => (_currentRoundArchived ? 0 : completedAbRipper.length + completedMakeupAbRipper.length) + _historyAbTotal;
+  int get _allTimeCardio => (_currentRoundArchived ? 0 : completedElliptical.length + completedMakeupElliptical.length) + _historyCardioTotal;
+  int get _allTimeTotal => _allTimeDays + _allTimeAb + _allTimeCardio;
+
+  // True once the calendar has rolled past the 90-day window.
+  bool get _programWindowElapsed {
+    if (programStartDate == null) return false;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final start = DateTime(
+        programStartDate!.year, programStartDate!.month, programStartDate!.day);
+    return today.difference(start).inDays + 1 > 90;
+  }
+
+  bool get _currentRoundArchived => programHistory.any((h) =>
+      h['startDate'] == programStartDate?.toIso8601String() &&
+      h['program'] == selectedProgram);
+
+  // Archive + celebrate a round that finished only because its 90-day window
+  // elapsed (user never tapped Day 90). Without this the round silently resets.
+  void _maybeAutoCompleteRound() {
+    if (!_programWindowElapsed) return;
+    if (completedDays.isEmpty) return;
+    if (_currentRoundArchived) {
+      // Already archived (e.g. by an older build) but never retired from the
+      // active calendar. Clear it so it lives only in history and the user is
+      // prompted to start a new routine.
+      _clearActiveRound();
+      return;
+    }
+    _saveToHistory();
+    _celebrationShown = true;
+    _saveProgress();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _showCelebration(
+        program: selectedProgram,
+        days: completedDays.length,
+        ab: completedAbRipper.length,
+        ellip: completedElliptical.length,
+        belt: _beltName,
+        startDate: programStartDate,
+      );
+      // Retire the finished round: moves it fully into history, stops it
+      // double-counting, and drops the user on the program-selection screen.
+      _clearActiveRound();
+    });
+  }
+
+  // Retire the active round without archiving (archiving is done separately).
+  void _clearActiveRound() {
+    setState(() {
+      selectedProgram = null;
+      completedDays.clear();
+      completedAbRipper.clear();
+      completedElliptical.clear();
+      workoutWeights.clear();
+      hybridSchedule = null;
+      currentDay = 1;
+      displayDay = null;
+      programStartDate = null;
+      _celebrationShown = false;
+      isRestWeek = false;
+      restWeekStartDate = null;
+      isMakeupWeek = false;
+      makeupSchedule.clear();
+      completedMakeupDays.clear();
+      completedMakeupAbRipper.clear();
+      completedMakeupElliptical.clear();
+      currentMakeupIndex = 0;
+    });
+    _saveProgress();
+  }
 
   String _getWorkout(int dayNumber) {
     if (hybridSchedule != null && dayNumber >= 1 && dayNumber <= hybridSchedule!.length) {
@@ -174,6 +275,9 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       _saveToHistory();
       _saveProgress();
     }
+
+    // Archive + celebrate a round whose 90-day window elapsed on its own
+    _maybeAutoCompleteRound();
 
     // Check if rest week has expired
     if (isRestWeek && restWeekStartDate != null) {
@@ -1213,21 +1317,30 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
 
   // ==================== COMPLETION FEATURES ====================
 
-  void _showCelebration() {
+  void _showCelebration({
+    String? program,
+    int? days,
+    int? ab,
+    int? ellip,
+    String? belt,
+    DateTime? startDate,
+  }) {
     if (!mounted) return;
-    final completedCount = completedDays.length;
-    final abCount = completedAbRipper.length;
-    final ellipCount = completedElliptical.length;
+    // Snapshot the round so the dialog renders correctly even if the live round
+    // is cleared immediately after (auto-complete path).
+    final programName = program ?? selectedProgram ?? '';
+    final completedCount = days ?? completedDays.length;
+    final abCount = ab ?? completedAbRipper.length;
+    final ellipCount = ellip ?? completedElliptical.length;
+    final beltName = belt ?? _beltName;
+    final beltColor = _getBeltColor(completedCount);
+    final start = startDate ?? programStartDate;
     final totalWorkouts = completedCount + abCount + ellipCount;
     final completionPercent = (completedCount / 90 * 100).toStringAsFixed(1);
-    final missedDays = <int>[];
-    for (int i = 1; i <= 90; i++) {
-      if (!completedDays.contains(i)) missedDays.add(i);
-    }
 
     String duration = '';
-    if (programStartDate != null) {
-      final days = DateTime.now().difference(programStartDate!).inDays;
+    if (start != null) {
+      final days = DateTime.now().difference(start).inDays;
       duration = '$days days';
     }
 
@@ -1270,10 +1383,10 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.2),
                       shape: BoxShape.circle,
-                      border: Border.all(color: _getBeltColor(), width: 4),
+                      border: Border.all(color: beltColor, width: 4),
                       boxShadow: [
                         BoxShadow(
-                          color: _getBeltColor().withOpacity(0.5),
+                          color: beltColor.withOpacity(0.5),
                           blurRadius: 30,
                           spreadRadius: 5,
                         ),
@@ -1300,7 +1413,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'You completed P90X3 ${selectedProgram ?? ""}!',
+                    'You completed P90X3 $programName!',
                     style: const TextStyle(
                       fontSize: 20,
                       color: Colors.white,
@@ -1323,7 +1436,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                   if (duration.isNotEmpty) const SizedBox(height: 12),
                   _celebrationStatCard(Icons.percent, 'Completion', '$completionPercent%'),
                   const SizedBox(height: 12),
-                  _celebrationStatCard(Icons.military_tech, 'Belt Earned', _beltName),
+                  _celebrationStatCard(Icons.military_tech, 'Belt Earned', beltName),
                   const SizedBox(height: 32),
                   // Action buttons
                   SizedBox(
@@ -2267,17 +2380,19 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _whatsNextOption(
-              icon: Icons.replay_rounded,
-              color: Colors.blue,
-              title: 'Repeat ${selectedProgram ?? "Program"}',
-              subtitle: 'Reset progress, same program, new start date',
-              onTap: () {
-                Navigator.pop(context);
-                _restartProgram(selectedProgram!);
-              },
-            ),
-            const SizedBox(height: 8),
+            if (selectedProgram != null) ...[
+              _whatsNextOption(
+                icon: Icons.replay_rounded,
+                color: Colors.blue,
+                title: 'Repeat ${selectedProgram!}',
+                subtitle: 'Reset progress, same program, new start date',
+                onTap: () {
+                  Navigator.pop(context);
+                  _restartProgram(selectedProgram!);
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
             _whatsNextOption(
               icon: Icons.swap_horiz_rounded,
               color: Colors.orange,
@@ -2421,11 +2536,11 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
               )
             : SizedBox(
                 width: double.maxFinite,
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: programHistory.length,
-                  itemBuilder: (context, index) {
-                    final entry = programHistory[index];
+                child: Column(
+                  children: [
+                    ...List<Widget>.generate(programHistory.length, (hIndex) {
+                    final entry = programHistory[hIndex];
+                    final rColor = _roundColor(hIndex);
                     final startDate = DateTime.parse(entry['startDate']);
                     final endDate = DateTime.parse(entry['endDate']);
                     final daysCompleted = entry['daysCompleted'] as int;
@@ -2433,6 +2548,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                     final cardioSessions = entry['ellipticalSessions'] as int;
                     final belt = entry['beltEarned'] as String;
                     final pct = (daysCompleted / 90 * 100).toStringAsFixed(0);
+                    final totalWorkouts = daysCompleted + abSessions + cardioSessions;
 
                     Color beltColor;
                     switch (belt) {
@@ -2453,7 +2569,9 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                       margin: const EdgeInsets.only(bottom: 8),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(16),
+                        side: BorderSide(color: rColor.shade300, width: 1.5),
                       ),
+                      color: rColor.shade50,
                       child: Padding(
                         padding: const EdgeInsets.all(12),
                         child: Column(
@@ -2464,15 +2582,24 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                 Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                                   decoration: BoxDecoration(
-                                    color: P90X3Colors.primary.withOpacity(0.1),
+                                    color: rColor.shade100,
                                     borderRadius: BorderRadius.circular(8),
                                   ),
                                   child: Text(
-                                    '${entry['program']}',
-                                    style: const TextStyle(
+                                    'R${hIndex + 1} · ${entry['program']}',
+                                    style: TextStyle(
                                       fontWeight: FontWeight.bold,
-                                      color: P90X3Colors.primary,
+                                      color: rColor.shade800,
                                     ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  '$totalWorkouts workouts',
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                    color: Color(0xFFD84315),
                                   ),
                                 ),
                                 const Spacer(),
@@ -2507,15 +2634,46 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                                 _historyStatChip('🥋 $abSessions', 'abs'),
                                 const SizedBox(width: 8),
                                 _historyStatChip('⚡ $cardioSessions', 'cardio'),
+                                const SizedBox(width: 8),
+                                _historyStatChip('🔥 $totalWorkouts', 'total'),
                               ],
                             ),
                           ],
                         ),
                       ),
                     );
-                  },
-                ),
+                  }),
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [Colors.deepPurple.withOpacity(0.1), Colors.deepPurple.withOpacity(0.05)],
+                      ),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.deepPurple.withOpacity(0.3)),
+                    ),
+                    child: Column(
+                      children: [
+                        const Text(
+                          'All-Time Totals',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.deepPurple),
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceAround,
+                          children: [
+                            _buildHistoryMiniStat('Total', '$_allTimeTotal', 'workouts', Colors.deepPurple),
+                            _buildHistoryMiniStat('Ab Ripper', '$_allTimeAb', 'sessions', Colors.red),
+                            _buildHistoryMiniStat('Cardio', '$_allTimeCardio', 'sessions', Colors.teal),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
+            ),
         actions: [
           if (programHistory.isNotEmpty)
             TextButton(
@@ -2575,7 +2733,9 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     if (!showHistoryOverlay || programHistory.isEmpty) return const SizedBox();
 
     return Column(
-      children: programHistory.map((entry) {
+      children: List<Widget>.generate(programHistory.length, (hIndex) {
+        final entry = programHistory[hIndex];
+        final rColor = _roundColor(hIndex);
         final program = entry['program'] as String? ?? 'Unknown';
         final startDateStr = entry['startDate'] as String?;
         final endDateStr = entry['endDate'] as String?;
@@ -2594,6 +2754,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
             .toSet() ?? <int>{};
         final weights = entry['weights'] as Map<String, dynamic>? ?? {};
         final pct = (daysCompleted / 90 * 100).toStringAsFixed(0);
+        final totalWorkouts = daysCompleted + abSessions + cardioSessions;
 
         final startDate = startDateStr != null ? DateTime.parse(startDateStr) : null;
         final endDate = endDateStr != null ? DateTime.parse(endDateStr) : null;
@@ -2603,12 +2764,12 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
           child: Container(
             margin: const EdgeInsets.only(bottom: 12),
             decoration: BoxDecoration(
-              color: const Color(0xFFE3F2FD),
+              color: rColor.shade50,
               borderRadius: BorderRadius.circular(24),
-              border: Border.all(color: const Color(0xFF64B5F6), width: 1.5),
+              border: Border.all(color: rColor.shade300, width: 1.5),
               boxShadow: [
                 BoxShadow(
-                  color: const Color(0xFF64B5F6).withOpacity(0.15),
+                  color: rColor.shade300.withOpacity(0.15),
                   blurRadius: 12,
                   offset: const Offset(0, 4),
                 ),
@@ -2626,36 +2787,50 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                       children: [
                         Row(
                           children: [
-                            const Icon(Icons.history_rounded, color: Color(0xFF1565C0), size: 22),
+                            Icon(Icons.history_rounded, color: rColor.shade800, size: 22),
                             const SizedBox(width: 8),
-                            Text(
-                              'Previous: $program',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 16,
-                                color: Color(0xFF1565C0),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Round ${hIndex + 1}: $program',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                      color: rColor.shade800,
+                                    ),
+                                  ),
+                                  Text(
+                                    '$totalWorkouts total workouts',
+                                    style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700,
+                                      color: Color(0xFFD84315),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                            const Spacer(),
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                               decoration: BoxDecoration(
-                                color: const Color(0xFF64B5F6).withOpacity(0.3),
+                                color: rColor.shade300.withOpacity(0.3),
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: Text(
                                 '$belt 🥋',
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontSize: 11,
                                   fontWeight: FontWeight.bold,
-                                  color: Color(0xFF1565C0),
+                                  color: rColor.shade800,
                                 ),
                               ),
                             ),
                             const SizedBox(width: 8),
                             Icon(
                               historyDetailExpanded ? Icons.expand_less : Icons.expand_more,
-                              color: const Color(0xFF1565C0),
+                              color: rColor.shade800,
                             ),
                           ],
                         ),
@@ -2675,6 +2850,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                             _buildHistoryMiniStat('Days', '$daysCompleted/90', '$pct%', Colors.blue),
                             _buildHistoryMiniStat('Ab Ripper', '$abSessions', 'sessions', Colors.red),
                             _buildHistoryMiniStat('Cardio', '$cardioSessions', 'sessions', Colors.teal),
+                            _buildHistoryMiniStat('Total', '$totalWorkouts', 'workouts', Colors.deepOrange),
                           ],
                         ),
                       ],
@@ -2683,7 +2859,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                 ),
                 // Expanded stats detail
                 if (historyDetailExpanded) ...[
-                  const Divider(height: 1, color: Color(0xFF64B5F6)),
+                  Divider(height: 1, color: rColor.shade300),
                   Padding(
                     padding: const EdgeInsets.all(12),
                     child: Column(
@@ -2691,6 +2867,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                         _buildHistoryStatRow('Completion', '$daysCompleted / 90 days ($pct%)'),
                         _buildHistoryStatRow('Ab Ripper Sessions', '$abSessions'),
                         _buildHistoryStatRow('Cardio Sessions', '$cardioSessions'),
+                        _buildHistoryStatRow('Total Workouts', '$totalWorkouts'),
                         _buildHistoryStatRow('Belt Earned', belt),
                         if (startDate != null)
                           _buildHistoryStatRow('Started', '${startDate.month}/${startDate.day}/${startDate.year}'),
@@ -3035,12 +3212,15 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
       'program': selectedProgram,
       'startDate': programStartDate!.toIso8601String(),
       'endDate': DateTime.now().toIso8601String(),
-      'daysCompleted': completedDays.length,
-      'abRipperSessions': completedAbRipper.length,
-      'ellipticalSessions': completedElliptical.length,
+      'daysCompleted': completedDays.length + completedMakeupDays.length,
+      'abRipperSessions': completedAbRipper.length + completedMakeupAbRipper.length,
+      'ellipticalSessions': completedElliptical.length + completedMakeupElliptical.length,
       'completedDays': completedDays.toList(),
       'completedAbRipper': completedAbRipper.toList(),
       'completedElliptical': completedElliptical.toList(),
+      'completedMakeupDays': completedMakeupDays.toList(),
+      'completedMakeupAbRipper': completedMakeupAbRipper.toList(),
+      'completedMakeupElliptical': completedMakeupElliptical.toList(),
       'weights': Map<String, dynamic>.from(workoutWeights.map((k, v) => MapEntry(k.toString(), v))),
       'beltEarned': _beltName,
     });
@@ -3230,7 +3410,8 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     if (!showHistoryOverlay || programHistory.isEmpty) return null;
     final normalizedDate = DateTime(date.year, date.month, date.day);
 
-    for (final history in programHistory) {
+    for (int hIndex = 0; hIndex < programHistory.length; hIndex++) {
+      final history = programHistory[hIndex];
       final startDateStr = history['startDate'] as String?;
       if (startDateStr == null) continue;
       final startDate = DateTime.parse(startDateStr);
@@ -3257,6 +3438,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
           'hasAbRipper': hasAbRipper,
           'abCompleted': abSet.contains(p90x3Day),
           'cardioDone': elliSet.contains(p90x3Day),
+          'historyIndex': hIndex,
         };
       }
     }
@@ -3446,6 +3628,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
         final hHasAb = historyHit['hasAbRipper'] as bool? ?? false;
         final hAbDone = historyHit['abCompleted'] as bool? ?? false;
         final hCardioDone = historyHit['cardioDone'] as bool? ?? false;
+        final hColor = _roundColor(historyHit['historyIndex'] as int? ?? 0);
 
         return Container(
           height: 90,
@@ -3453,7 +3636,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(8),
             border: Border.all(
-              color: isActualToday ? Colors.orange : const Color(0xFF64B5F6),
+              color: isActualToday ? Colors.orange : hColor.shade300,
               width: isActualToday ? 3 : 1,
             ),
           ),
@@ -3464,7 +3647,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                 // Date header
                 Container(
                   height: 20,
-                  color: const Color(0xFF42A5F5),
+                  color: hColor.shade400,
                   child: Padding(
                     padding: const EdgeInsets.only(left: 4, right: 4, top: 2),
                     child: Row(
@@ -3484,12 +3667,12 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                   ),
                 ),
                 // Cardio section
-                _buildHistoryCellSection('⚡', hCardioDone),
+                _buildHistoryCellSection('⚡', hCardioDone, hColor),
                 // Ab Ripper section (if applicable)
                 if (hHasAb)
-                  _buildHistoryCellSection('🥋', hAbDone),
+                  _buildHistoryCellSection('🥋', hAbDone, hColor),
                 // Main workout section
-                _buildHistoryMainSection(_abbreviateWorkout(hWorkout)),
+                _buildHistoryMainSection(_abbreviateWorkout(hWorkout), hColor),
               ],
             ),
           ),
@@ -3738,15 +3921,15 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     );
   }
 
-  Widget _buildHistoryCellSection(String emoji, bool done) {
+  Widget _buildHistoryCellSection(String emoji, bool done, MaterialColor roundColor) {
     return Expanded(
       child: Container(
         width: double.infinity,
         decoration: BoxDecoration(
-          color: done ? const Color(0xFF42A5F5) : const Color(0xFFE3F2FD),
+          color: done ? roundColor.shade400 : roundColor.shade50,
           border: Border(
             top: BorderSide(
-              color: const Color(0xFF90CAF9).withOpacity(0.4),
+              color: roundColor.shade200.withOpacity(0.4),
               width: 0.5,
             ),
           ),
@@ -3761,16 +3944,16 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     );
   }
 
-  Widget _buildHistoryMainSection(String name) {
+  Widget _buildHistoryMainSection(String name, MaterialColor roundColor) {
     return Expanded(
       child: Container(
         width: double.infinity,
         padding: const EdgeInsets.symmetric(horizontal: 3),
         decoration: BoxDecoration(
-          color: const Color(0xFF1E88E5),
+          color: roundColor.shade600,
           border: Border(
             top: BorderSide(
-              color: const Color(0xFF90CAF9).withOpacity(0.4),
+              color: roundColor.shade200.withOpacity(0.4),
               width: 0.5,
             ),
           ),
@@ -3813,8 +3996,8 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     return abbreviations[workout] ?? workout;
   }
 
-  Color _getBeltColor() {
-    final completedCount = completedDays.length;
+  Color _getBeltColor([int? count]) {
+    final completedCount = count ?? completedDays.length;
 
     if (completedCount < 23) {
       // 0-22 days: Bronze
@@ -4240,7 +4423,103 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
 
                 if (isProgramComplete) const SizedBox(height: 12),
 
-                // Workout Completion Counters
+                // All-Time Totals Bar (collapsible)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: GestureDetector(
+                    onTap: () => setState(() => _allTimeExpanded = !_allTimeExpanded),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 250),
+                      curve: Curves.easeInOut,
+                      padding: EdgeInsets.symmetric(vertical: _allTimeExpanded ? 12 : 8, horizontal: 12),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF1A237E), Color(0xFF283593)],
+                        ),
+                        borderRadius: BorderRadius.circular(24),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF1A237E).withOpacity(0.3),
+                            blurRadius: 16,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Text(
+                                'ALL-TIME',
+                                style: TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: 2,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              AnimatedRotation(
+                                turns: _allTimeExpanded ? 0.5 : 0,
+                                duration: const Duration(milliseconds: 250),
+                                child: const Icon(Icons.expand_more, color: Colors.white54, size: 16),
+                              ),
+                            ],
+                          ),
+                          AnimatedCrossFade(
+                            firstChild: const SizedBox.shrink(),
+                            secondChild: Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                                children: [
+                                  _buildCompactCounter(
+                                    'Workouts',
+                                    _allTimeTotal,
+                                    Icons.fitness_center,
+                                    Colors.amber,
+                                    labelColor: Colors.white70,
+                                  ),
+                                  Container(width: 1, height: 40, color: Colors.white24),
+                                  _buildCompactCounter(
+                                    'P90X',
+                                    _allTimeDays,
+                                    Icons.calendar_today,
+                                    Colors.lightBlueAccent,
+                                    labelColor: Colors.white70,
+                                  ),
+                                  Container(width: 1, height: 40, color: Colors.white24),
+                                  _buildCompactCounter(
+                                    'Ab Rippers',
+                                    _allTimeAb,
+                                    Icons.sports_martial_arts,
+                                    Colors.orangeAccent,
+                                    labelColor: Colors.white70,
+                                  ),
+                                  Container(width: 1, height: 40, color: Colors.white24),
+                                  _buildCompactCounter(
+                                    'Cardios',
+                                    _allTimeCardio,
+                                    Icons.directions_run,
+                                    Colors.greenAccent,
+                                    labelColor: Colors.white70,
+                                  ),
+                                ],
+                              ),
+                            ),
+                            crossFadeState: _allTimeExpanded ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+                            duration: const Duration(milliseconds: 250),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 8),
+
+                // Current Routine Counters
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Container(
@@ -4261,21 +4540,21 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
                       children: [
                         _buildCompactCounter(
                           'Total',
-                          completedDays.length + completedAbRipper.length + completedElliptical.length,
+                          completedDays.length + completedMakeupDays.length,
                           Icons.fitness_center,
                           Colors.deepPurple,
                         ),
                         Container(width: 1, height: 40, color: Colors.grey[200]),
                         _buildCompactCounter(
                           'Ab Rippers',
-                          completedAbRipper.length,
+                          completedAbRipper.length + completedMakeupAbRipper.length,
                           Icons.sports_martial_arts,
                           Colors.red,
                         ),
                         Container(width: 1, height: 40, color: Colors.grey[200]),
                         _buildCompactCounter(
                           'Cardios',
-                          completedElliptical.length,
+                          completedElliptical.length + completedMakeupElliptical.length,
                           Icons.directions_run,
                           Colors.teal,
                         ),
@@ -4870,7 +5149,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
     );
   }
 
-  Widget _buildCompactCounter(String label, int count, IconData icon, Color color) {
+  Widget _buildCompactCounter(String label, int count, IconData icon, Color color, {Color? labelColor}) {
     return Column(
       children: [
         Container(
@@ -4895,7 +5174,7 @@ class _P90X3ScreenState extends State<P90X3Screen> with SingleTickerProviderStat
           label,
           style: TextStyle(
             fontSize: 11,
-            color: Colors.grey[600],
+            color: labelColor ?? Colors.grey[600],
             fontWeight: FontWeight.w500,
           ),
         ),
